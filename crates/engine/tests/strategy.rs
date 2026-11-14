@@ -365,10 +365,93 @@ fn phase1_historical_composition_is_accepted_and_budgeted() {
             })
             .collect(),
     );
-    assert_eq!(
-        ValidatedStrategy::parse(&r.to_string()).unwrap_err()[0].code,
-        "resource_limit"
+    let text = r.to_string();
+    let errors = ValidatedStrategy::parse(&text).unwrap_err();
+    assert_eq!(errors[0].code, "resource_limit");
+    assert_eq!(errors[0].path, "$.measurements");
+    assert!(errors[0].accepted_form.contains("296388608 bytes"));
+    assert!(errors[0].accepted_form.contains("268435456 bytes"));
+    assert!(errors[0].accepted_form.contains("8388608 bytes reserved"));
+    for i in 0..5 {
+        assert!(
+            errors[0]
+                .accepted_form
+                .contains(&format!("$.measurements[{i}]: 57600000 bytes"))
+        );
+    }
+    assert!(errors[0].accepted_form.contains("Shorten lookbacks"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = metten_engine::Engine::open(dir.path().join("memory.sqlite")).unwrap();
+    for request in [
+        metten_engine::StrategyRequest::Preview { json: text.clone() },
+        metten_engine::StrategyRequest::Save {
+            json: text.clone(),
+            reviewed_json: text,
+        },
+    ] {
+        let response = engine.strategies(request).unwrap();
+        let metten_engine::StrategyResponse::RuleErrors {
+            errors: returned, ..
+        } = &response
+        else {
+            panic!("expected memory rejection");
+        };
+        assert_eq!(returned, &errors);
+        let serialized = serde_json::to_value(response).unwrap();
+        assert_eq!(
+            serialized["errors"][0]["accepted_form"],
+            errors[0].accepted_form.as_ref()
+        );
+    }
+    let metten_engine::StrategyResponse::Versions { versions, .. } = engine
+        .strategies(metten_engine::StrategyRequest::List { before_id: None })
+        .unwrap()
+    else {
+        panic!("expected saved versions");
+    };
+    assert!(versions.is_empty());
+    r["measurements"].as_array_mut().unwrap().pop();
+    assert!(ValidatedStrategy::parse(&r.to_string()).is_ok());
+}
+
+#[test]
+fn memory_diagnostic_counts_both_sides_without_echoing_authored_text() {
+    let mut r = historical_rule("rolling_range", "0");
+    r["name"] = json!("private_name_marker");
+    r["inputs"][0] = json!({"id":"underlying","source":"kalshi",
+        "instrument":"current_contract","field":"buyable_ask",
+        "unit":"contract_cents","side":"selected_side"});
+    r["measurements"][0]["id"] = json!("private_calculation_marker");
+    r["measurements"][0]["lookback_seconds"] = json!(3600);
+    r["purchase_options"][0]["when"]["left"]["reference"] = json!("private_calculation_marker");
+    r["purchase_options"][0]["when"]["right"]["unit"] = json!("contract_cents");
+    let errors = ValidatedStrategy::parse(&r.to_string()).unwrap_err();
+    assert_eq!(errors[0].code, "resource_limit");
+    assert!(errors[0].accepted_form.contains("469188736 bytes"));
+    assert!(
+        errors[0]
+            .accepted_form
+            .contains("$.measurements[0]: 460800128 bytes")
     );
+    let serialized = serde_json::to_string(&errors).unwrap();
+    assert!(!serialized.contains("private_name_marker"));
+    assert!(!serialized.contains("private_calculation_marker"));
+    r["measurements"][0]["lookback_seconds"] = json!(1800);
+    let valid = ValidatedStrategy::parse(&r.to_string()).unwrap();
+    assert_eq!(valid.requirements().planned_bytes, 238788736);
+
+    r["measurements"] = json!([]);
+    for i in 0..63 {
+        r["measurements"].as_array_mut().unwrap().push(json!({
+            "id":format!("current_{i}"),"operation":"difference",
+            "left":{"reference":"underlying"},"right":{"value":"0","unit":"contract_cents"}
+        }));
+    }
+    let errors = ValidatedStrategy::parse(&r.to_string()).unwrap_err();
+    assert_eq!(errors[0].code, "resource_limit");
+    assert_eq!(errors[0].path, "$");
+    assert!(!errors[0].accepted_form.contains("Planned memory"));
 }
 
 fn historical_rule(operation: &str, threshold: &str) -> Value {

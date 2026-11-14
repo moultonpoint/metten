@@ -14,6 +14,8 @@ Preserve the root README as the GitHub project page. Do not create `.github/READ
 
 ## Agent skills
 
+For locating code or scoping a change, start with [the code map](docs/agents/code-map.md), then follow the relevant component contract and tests. Update the map when a change moves an entry point or adds a maintained boundary.
+
 For evidence navigation, bounded source reads, coordinated delegation and mixed-work checkpoint commits, follow `docs/agents/verification.md`.
 
 ### Issue tracker

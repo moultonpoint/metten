@@ -123,7 +123,17 @@ not change dependencies or suppress the alert. No repository security setting
 was changed or re-verified during this cleanup; the settings above are the
 recorded observations from the original implementation.
 
-PR #37 independently owns the security-scanning guidance in CONTRIBUTING.md.
-Preserve both sections during integration; after #36 lands, its references to
-Dependabot's monthly automation route must read weekly. The monthly manual
-fallback remains monthly.
+### Integration after PR #37
+
+Merged main `26549a35eb4184f6921984203e2b66b80db409a8` normally after #37
+landed. The sole conflict was the two appended CONTRIBUTING.md sections;
+resolution retains both dependency-review and security-scanning guidance.
+Weekly version updates and the monthly manual fallback remain intact; the
+scanner route is frequency-neutral. The scanner section matches main exactly.
+No dependency configuration, application dependency or security setting changed.
+
+Focused YAML assertions and diff whitespace validation passed on this integrated
+candidate. Unchanged configuration source review is reused; no broad review or
+local application suite was repeated. Hosted Foundation and CodeQL results for
+the new pushed head remain pending. Issue #29 remains open for post-merge initial
+npm, Cargo and Actions version-job outcomes. The existing glib alert is unchanged.

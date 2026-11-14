@@ -59,7 +59,7 @@ checks, not upstream source-review clearance or approval of either upgrade.
 Neither proposal is merged by this task. Their affected-evidence notes
 ([#33](https://github.com/moultonlavah/metten/pull/33#issuecomment-6872746824),
 [#34](https://github.com/moultonlavah/metten/pull/34#issuecomment-6872746985)) identify
-checkout/credential-cleanup or Node/cache behavior respectively and preserve
+Node/cache or checkout/credential-cleanup behavior respectively and preserve
 the #28 upstream source-review requirement before merge.
 
 The new three-ecosystem weekly configuration is not on the default branch yet.
@@ -88,9 +88,42 @@ ecosystems, weekly scheduling, minor/patch version-only groups, no ignore rules
 or alternate target branch. Whitespace validation passed. No new application
 logic or test framework was introduced.
 
-Exact-final-revision Foundation checks are pending. TypeScript
-checking and Rust clippy are wired; no separate JavaScript lint or Dependabot
-configuration lint gate is wired. Use the existing Ruby YAML parser for a
+On the previous head `ee381e17d3fa33529714afd5fafe7bba0137e1ff`, complete
+[Foundation checks](https://github.com/moultonlavah/metten/actions/runs/43564843122)
+passed. This is historical evidence for that revision; fresh checks are required
+for the updated candidate below. TypeScript checking and Rust clippy are wired;
+no separate JavaScript lint or Dependabot configuration lint gate is wired. Use the existing Ruby YAML parser for a
 focused configuration check without adding a dependency or test framework.
 The existing complete Foundation workflow supplies final regression evidence;
 no claim is made that prior packaged-app evidence belongs to a new artifact.
+
+## PR #36 cleanup — 14 November 2026 UTC
+
+Merged current main `47d0f384669f38aaf76e3c5bc50060836b235f02` using a normal merge,
+without rewriting inherited commits. Main adds maintained contracts, private-report
+storage guidance and a strategy memory-error explanation; those changes are
+preserved. The PR diff against that base remains limited to the three files
+listed above. The dependency configuration and review policy are unchanged.
+Corrected the proposal evidence mapping: #33 affects Node/cache behavior;
+#34 affects checkout/credential cleanup.
+
+The focused Ruby YAML assertions passed again: version 2, exactly the three root
+ecosystems, weekly scheduling, one minor/patch version-only group per ecosystem,
+and no extra options such as ignores or alternate branches. Diff whitespace
+validation passed. Fresh Foundation and CodeQL checks on the pushed cleanup head
+remain pending; previous build results do not establish this candidate's result.
+No local packaged checks were repeated: this PR changes configuration/guidance,
+with no application, compiler, dependency or packaged-boundary change against
+current main. The existing CI workflow will check the integrated candidate.
+
+Issue #28 is closed and the PR has no unresolved review threads. Issue #29 stays
+open for the three initial version-job outcomes after merge. The lead confirmed
+the existing glib alert remains a separate compatibility repair; this task does
+not change dependencies or suppress the alert. No repository security setting
+was changed or re-verified during this cleanup; the settings above are the
+recorded observations from the original implementation.
+
+PR #37 independently owns the security-scanning guidance in CONTRIBUTING.md.
+Preserve both sections during integration; after #36 lands, its references to
+Dependabot's monthly automation route must read weekly. The monthly manual
+fallback remains monthly.

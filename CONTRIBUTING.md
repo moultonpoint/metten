@@ -34,11 +34,10 @@ Report vulnerabilities privately using the instructions in [SECURITY.md](SECURIT
 
 ## Maintain build-action pins
 
-External actions in `.github/workflows/checks.yml` use full commit SHAs, with
+External actions in `.github/workflows/` use full commit SHAs, with
 upstream versions or branch names in comments. `.github/dependabot.yml` requests
-monthly update proposals for the repository’s GitHub Actions. This
-configuration takes effect on the default branch;
-no proposal from it has yet been observed. Proposals require source review and
+weekly update proposals for the repository’s GitHub Actions. This
+configuration takes effect on the default branch. Proposals require source review and
 passing Foundation checks before merge; they are never automatic approval.
 
 Connor Moulton (@moultonlavah) owns a manual review on the first of each month
@@ -57,3 +56,50 @@ full-hour tests and packaged Mac build. Rust **1.100.0** stays fixed: a compiler
 upgrade needs a separate issue and reassessment of the engine's
 compiler-dependent resource proof. Run the complete Foundation checks workflow
 on the exact proposed revision before accepting any pin update.
+
+## Review dependency updates
+
+Dependabot checks npm, the root Cargo workspace (both members and the shared
+lockfile), and GitHub Actions weekly. Patch/minor version updates are grouped
+per ecosystem; major upgrades remain separate proposals. Grouping is not proof
+of compatibility. All merges remain manual. Security-update PRs are enabled in
+repository settings and follow GitHub's security processing, independently of
+the weekly version-update schedule; the version groups do not delay them.
+
+For each proposal, record the affected checks and evidence in its PR before
+merge. Require passing Foundation checks on the exact proposed revision,
+including the native tests, release full-hour tests and packaged Mac build.
+Review Tauri's npm API/CLI and Rust crates together for a supported combination;
+separate ecosystem proposals must not be merged into an incompatible state.
+If coordinated changes are needed, combine them in one reviewed candidate and
+check that revision. Do not silently advance Rust **1.100.0** to accept an update:
+leave an update requiring a newer compiler unmerged and open a separate compiler
+issue with the affected resource evidence.
+
+Re-run the isolated dummy-credential, storage or IPC packaged checks when an
+update affects those boundaries. Reassess engine resource proofs when relevant
+allocation, layout, history or processing assumptions change. Record why those
+checks are affected or why existing evidence still applies; do not repeat
+unrelated manual checks or present an old build's results as evidence for a new
+artifact. Follow the action-pin review route above for action updates, including
+the first-of-month manual fallback. See the [issue #29 record](docs/verification/issue-29.md)
+for actual settings and activation evidence still required.
+
+## Maintain security scanning
+
+`.github/workflows/codeql.yml` runs the standard CodeQL queries. Rust runs on
+macOS; the recorded extraction diagnostics include the Mac-only credential module
+without the original platform-exclusion warning. This closes that specific gap,
+not full security acceptance. JavaScript/TypeScript, Actions and Python run on
+Linux. Swift's standalone
+verification harness is not scanned. The scanner does not execute that harness
+or access credentials. See [issue #30 evidence](docs/verification/issue-30.md)
+for coverage limitations and the acceptance still needed before making scanning
+a merge requirement.
+
+The CodeQL `init` and `analyze` actions share one reviewed upstream release SHA.
+Update both together through the documented Dependabot/pin-maintenance route, with the
+same manual fallback owner above. Review action entry points and release changes,
+then inspect each language's extraction diagnostics and run all Foundation checks
+on the final revision. A successful job or file count alone does not prove native
+coverage. Keep the pinned Rust compiler and ordinary workflow permissions intact.

@@ -3,11 +3,66 @@
 ## Current evidence index
 
 Issue #30 remains open. The initial default scan's Mac credential coverage gap
-is recorded below. A dedicated workflow now proposes Rust analysis on macOS;
-its actual extraction evidence is still pending. Independent review found no
-workflow blocker; its documentation corrections are recorded below.
+is recorded below. The dedicated macOS workflow's hosted diagnostics now
+include the native credential module without the original platform-exclusion
+warning; see [verified hosted evidence](#verified-hosted-evidence--14-november-2026-utc).
+This establishes the specific platform correction, not complete semantic coverage
+or absence of vulnerabilities. Independent review found no workflow blocker.
 Scanning remains nonblocking; the existing `mac-foundation` merge requirement
 remains in force. This record is not security or release acceptance.
+
+## Verified hosted evidence — 14 November 2026 UTC
+
+Source: `2c1d266afa83c153f6bc9726529797ef8fc75b50`.
+[CodeQL run 43566532454](https://github.com/moultonlavah/metten/actions/runs/43566532454)
+passed all four language jobs. The
+[Rust job](https://github.com/moultonlavah/metten/actions/runs/43566532454/job/132361501855)
+used Rust 1.100.0 on `aarch64-apple-darwin`. Its diagnostic-report step explicitly
+names all nine expected Rust files, including `src-tauri/src/credential.rs`, as
+successfully extracted; extraction reports zero files with errors. The original
+semantic-analyzer-unavailable/macro-expansion-skipped warning is absent, and the
+emitted diagnostics contain no unresolved-macro, extraction-warning/error,
+unextracted-element or low-database-quality entry. The module is included from
+`main.rs` under `target_os = "macos"`; macOS extraction addresses that platform
+boundary without launching the app or using credentials.
+
+The report also emits note-level internal consistency diagnostics: control flow
+(14 entries), data flow (29), syntax tree (9), type inference (5), and SSA (10).
+These entries supply neither source locations nor numerical inconsistency counts;
+they do not establish zero internal inconsistencies. Apple Silicon's beta support
+and the unscanned standalone Swift harness remain limitations. File counts and
+green jobs alone would not establish the platform correction.
+
+[Foundation run 43566528865](https://github.com/moultonlavah/metten/actions/runs/43566528865)
+passed on the same exact source, including both Python suites, interface and
+TypeScript checks, web build, Rust formatting, workspace tests, release full-hour
+tests, clippy, and packaged Mac build. The PR-triggered Foundation run also
+passed. Automated Codex review reported no major issues on that source; there
+are no submitted formal reviews or unresolved review threads.
+
+Cleanup incorporates current main `47d0f38` through a normal merge and updates
+only this evidence and the contributor coverage wording. The paired-action update
+guidance is frequency-neutral to remain accurate alongside PR #36; the existing
+manual fallback is preserved. Local workflow configuration assertions and a
+comparison of explicit Rust extraction diagnostics against all tracked Rust
+files passed, as did the whitespace check. The scanner workflow,
+native credential source, Foundation workflow, compiler, and lockfiles are
+unchanged from the recorded source; main's newer strategy correction still
+requires final-head hosted checks. Those results must be inspected before merge;
+prior runs are not final-head CI acceptance.
+
+Read-only API recheck during cleanup: prerequisite #28 is closed, repository
+code-scanning alerts return `[]`, and default setup is `not-configured`. Empty
+alerts do not prove safety. Main has no replacement workflow until manual merge,
+so the scanning gap remains escalated to the lead. No security settings changed.
+After integration, verify actual main analyses and alert triage, then separately
+configure and test missing/failed-analysis enforcement before promoting scanning
+to a merge requirement. Issue #30 remains incomplete for those acceptance steps.
+
+## Historical preparation and baseline
+
+The sections below retain the setup sequence and its then-pending evidence;
+the hosted results above supersede their pending statements.
 
 ## Mac-runner correction — 14 November 2026 UTC
 

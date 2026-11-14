@@ -23,7 +23,7 @@ No issue, label or assignment authorizes credentials, accounts, paid services, d
 
 Use one primary category label: `product`, `security`, `maintenance` or `documentation`. Retain useful secondary labels such as `dependencies` and `github_actions`. Native Feature/Bug/Task types are supported here; set the appropriate existing type without editing account-wide definitions. If unavailable later, defer types instead of inventing labels.
 
-Priority currently uses **only** `priority:urgent`, `priority:high`, `priority:medium`, `priority:low` labels. Native issue fields were inaccessible on 14 November 2026, not proven absent. Do not add a duplicate Project Priority field. A later migration to accessible native Priority (Urgent/High/Medium/Low) must map values and remove old labels. Account-wide definition changes affecting other repositories require an owner decision.
+Priority currently uses **only** `priority:urgent`, `priority:high`, `priority:medium`, `priority:low` labels. Owner-approved access was restored on 14 November 2026; the account issue-fields API returned no definitions, so no existing native Priority was available to reuse. Retain this fallback rather than creating shared account definitions for this setup. Do not add a duplicate Project Priority field. A later migration to accessible native Priority (Urgent/High/Medium/Low) must map values and remove old labels. Account-wide definition changes affecting other repositories require an owner decision.
 
 | Priority | Meaning |
 | --- | --- |
@@ -52,21 +52,21 @@ A decision on a prerequisite does not make every dependent `ready-for-human`.
 
 ## Project configuration and access
 
-**14 November 2026:** Project selection, views, stage updates, seeding and automation are blocked: `gh project list --owner moultonlavah` requires `read:project`. `/user/issue-fields` returns HTTP 403 and requires `read:user`. Existing Projects/fields may exist; no account definitions were changed. [Issue #41](https://github.com/moultonlavah/metten/issues/41) holds inventory, verification and next action. Keep it open until mandatory configuration is verified. The owner can supply an accessible Project/edit-capable connection or complete the bounded setup below; do not obtain broader credentials silently.
+**14 November 2026:** owner-approved `project` and `read:user` access resolved the initial connection block. No existing Projects or account issue-field definitions were returned. Created the private [Metten Project](https://github.com/users/moultonlavah/projects/1), linked to this repository; kept priority labels and existing native issue types. No shared account definitions changed. [Issue #41](https://github.com/moultonlavah/metten/issues/41) holds the dated inventory, observed settings, walkthroughs and remaining publication evidence.
 
-Once accessible, reuse one suitable Project and existing fields. Configure only these views:
+The Project uses only these views; reuse its existing fields for future updates:
 
 | View | Filter |
 | --- | --- |
-| Queue (mandatory) | `repo:moultonlavah/metten is:issue is:open` |
-| Product | Queue filter plus `label:product` |
-| Security | Queue filter plus `label:security` |
+| [Queue (mandatory)](https://github.com/users/moultonlavah/projects/1/views/1) | `repo:moultonlavah/metten is:issue is:open` |
+| [Product](https://github.com/users/moultonlavah/projects/1/views/2) | Queue filter plus `label:product` |
+| [Security](https://github.com/users/moultonlavah/projects/1/views/3) | Queue filter plus `label:security` |
 
-Show labels (category, triage, priority), Status (the stages above) and assignee. Verify every current open issue is in Queue; check native blocker indicators and direct dependency/body links. Report missing indicators honestly. Filters across different fields combine with AND; do not promise cross-field OR or a blocked-only filter. Drop unsupported optional views/sorts, retain complete Queue.
+Views show labels (category, triage, priority), Status (the stages above) and assignee; Queue also shows parent issue. Queue and Security use saved flat display defaults so children remain visible independently of parents. Native blocked icons are shown beside affected issues; follow issue links for exact dependency details. Verify every current open issue is in Queue; check native blocker indicators and direct dependency/body links. Report missing indicators honestly. Filters across different fields combine with AND; do not promise cross-field OR or a blocked-only filter. Drop unsupported optional views/sorts, retain complete Queue.
 
 With priority labels there is **no native Priority sort**. During triage inspect temporary `label:priority:urgent`, then high, medium, low, then missing-priority items (negate all four labels); return to Queue. If migrated to native Priority, sort by that field. Add no duplicate ranking, Effort/Severity/date fields or extra permanent views.
 
-Manually seed existing issues: built-in auto-add does not backfill. Enable only built-in auto-add (repository selected, `is:issue is:open`) and closed-issue → Done. Do not enable board → issue closure. Verify behavior on an explicitly identified disposable setup item with cleanup, or label it a walkthrough. Preserve manual merges; no bot, stale closure, automatic security dismissal, paid service or organization migration.
+All 20 open issues in the setup inventory were manually seeded. Manually seed any future omitted existing issues: built-in auto-add does not backfill. Only built-in auto-add (Metten repository selected, `is:issue is:open`) and closed-issue → Done are enabled. Other default workflows, including automatic issue closure, merge/linked-PR stage changes, item-added stage assignment and automatic sub-issue addition, are disabled. Do not enable board → issue closure. Verify behavior on an explicitly identified disposable setup item with cleanup, or label it a walkthrough. Preserve manual merges; no bot, stale closure, automatic security dismissal, paid service or organization migration.
 
 Milestones are optional, finite and never dependencies or inherited child membership. If useful, create at most Repository security baseline (#30/#39/#40) and First complete paper purchase (#5/#6), with explicit membership/exit evidence and no unsupported dates. Parent/child counts are not effort; unavailable evidence remains required. None were created for this setup: existing blockers already express the sequence.
 

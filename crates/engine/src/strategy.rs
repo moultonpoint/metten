@@ -26,7 +26,7 @@ pub struct RuleError {
     pub path: String,
     pub code: &'static str,
     pub message: &'static str,
-    pub accepted_form: &'static str,
+    pub accepted_form: std::borrow::Cow<'static, str>,
 }
 fn rule_error(path: &str, code: &'static str) -> RuleError {
     fixed_work(1);
@@ -67,7 +67,7 @@ fn rule_error(path: &str, code: &'static str) -> RuleError {
                 "Remove unsupported fields; use only the documented fields for this object."
             }
             _ => "Use the format-2 contract at this field.",
-        },
+        }.into(),
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -584,8 +584,28 @@ impl ValidatedStrategy {
                 .iter()
                 .map(|x| if resolved[&x.id].2 { 2 } else { 1 })
                 .sum::<usize>();
-        if expanded + 2 > 128 || bytes > MEMORY_LIMIT {
+        if expanded + 2 > 128 {
             return Err(err("resource_limit"));
+        }
+        if bytes > MEMORY_LIMIT {
+            let mut error = rule_error("$.measurements", "resource_limit");
+            error.message = "The strategy needs more memory than the supported limit.";
+            let mut details = format!(
+                "Planned memory: {bytes} bytes; limit: {MEMORY_LIMIT} bytes; {RESERVE} bytes reserved for non-history state."
+            );
+            for (i, measurement) in document.measurements.iter().enumerate() {
+                let cost = history_bytes(&measurement.calculation)
+                    * if resolved[&measurement.id].2 { 2 } else { 1 };
+                // Use field locations, never echo author-supplied names or identifiers.
+                details.push_str(&format!(
+                    "\n$.measurements[{i}]: {cost} bytes of history (including side expansion)."
+                ));
+            }
+            details.push_str(
+                "\nShorten lookbacks or remove historical measurements, then preview again.",
+            );
+            error.accepted_form = details.into();
+            return Err(error);
         }
         // Propagate cumulative source horizons through every operand path.
         for m in &document.measurements {

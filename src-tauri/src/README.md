@@ -7,19 +7,22 @@ commands, and guarded exit. [credential.rs](./credential.rs) is the Mac-only,
 dummy-only Security adapter. The shared engine remains the source of session and
 recording truth; this bridge is not a trading engine or provider integration.
 See the [desktop package contract](../README.md) for build, permissions, icons,
-configuration, and evidence limits. Issue #4 additions are excluded from this
-contract, including additions inside `main.rs`.
+configuration, and evidence limits. Completed issue #4 adds local strategy
+operations; [its evidence index](../../docs/verification/issue-4.md#current-evidence-index)
+records their bounded checks. Session Start/Pause remains non-trading.
 
 ## Interface
 
 | Symbol | In-scope contract |
 | --- | --- |
-| `main.rs:Workspace` | Holds `Result<Engine, String>`, Mac `Credentials`, `quitting`, `exit_ready`, and a mutex-protected `quit_error`. A workspace-open failure is retained for command errors rather than inventing engine state. |
+| `main.rs:Workspace` | Holds `Result<Engine, String>`, Mac `Credentials`, shared `StrategyAdmission`, `quitting`, `exit_ready`, and a mutex-protected `quit_error`. A workspace-open failure is retained for command errors rather than inventing engine state. |
 | `main.rs:snapshot` | Returns engine `Snapshot` with effective `running`, `pending`, `recording_error`, committed `history`, and `writer_settings`; overlays a saved quit error when present. Propagates workspace-open errors. |
 | `main.rs:control` | Accepts the engine `Action` values `start`, `pause`, or `advance`; refuses while quitting and otherwise calls `Engine::request`. Acceptance means queued, not saved; callers must observe the returned snapshot. |
 | `main.rs:decode_credential` | Requires a JSON object with only `operation` and optional `value`. `save`/`replace` require a string value; `remove`/`check` forbid the value key. Other shapes, keys, operations, and raw bodies return `Invalid credential request.` |
 | `main.rs:credential` | Uses raw request decoding and a blocking worker. `check` consumes a runner expectation, then all operations acquire `Credentials::begin_operation` before `execute`. Returns fixed status/error strings, never the saved bytes. Non-Mac builds refuse with the isolated-Mac-runner requirement. |
-| `main.rs:begin_quit` | Marks quitting once, waits for `Credentials::operation`, calls `Engine::stop_and_save`, then sets `exit_ready` and exits on success. Failure retains its error, clears quitting for retry, and shows/focuses `main`. If no engine opened, there is no engine state to save. |
+| `main.rs:decode_strategies`, `strategies` | Strict bounded tagged preview/save/list/detail requests; one admitted blocking task invokes the engine, with sanitized failures and no credential operation. |
+| `main.rs:StrategyAdmission`, `StrategyGuard`, `admit_strategy`, `wait_for_strategy` | Nonblocking Busy/quit admission; owned guard releases and notifies the quit waiter, including error/unwind or canceled-before-execution paths. |
+| `main.rs:begin_quit` | Marks quitting once, waits for admitted strategy work and then `Credentials::operation`, calls `Engine::stop_and_save`, then sets `exit_ready` and exits on success. Failure retains its error, clears quitting for retry, and shows/focuses `main`. If no engine opened, there is no engine state to save. |
 | `main.rs:main`, `context` | Build the Tauri context, replace the Mac predefined Quit item with guarded `quit-session`, open native-selected `session.sqlite`, register the in-scope commands, and intercept close/exit requests until shutdown is ready. |
 | `credential.rs:Credentials::setup` | Accepts `METTEN_VERIFY_FD=3` and a valid inherited Unix socket bootstrap; otherwise stores no usable target. Opens/unlocks the validated disposable Keychain, clears its retained password string, and starts the expectation observer. |
 | `credential.rs:Credentials::begin_operation`, `operation` | Serialize credential operations and shutdown. A command checks the quitting flag after obtaining the lock and returns `Quitting — credential action refused.` when set. |
@@ -67,6 +70,7 @@ worker failure in `main.rs:credential` has a fixed reopen-app error.
   sequence, `local-use` phase, and bounded dummy data, and acknowledges receipt.
   Protocol failure clears pending data and makes the channel unusable;
   `expectation` consumes a valid value once.
+- Strategy work holds no credential lock. Quit waits on strategy completion before taking the credential lock, and engine save rechecks quitting under its recorder lock before mutation.
 - `main.rs:begin_quit` waits for an ongoing native credential operation. Queued
   operations refuse after acquiring the lock when quitting is set. There is no
   arbitrary Security-call cancellation: an actual OS prompt must finish before
@@ -94,7 +98,7 @@ worker failure in `main.rs:credential` has a fixed reopen-app error.
 
 From the repository root, `cargo test -p metten --locked` exercises native unit
 and command-authority checks. `main.rs:permissions_tests` covers fixed decoding
-errors and local-main-only authority. `credential.rs:tests` covers queued refusal
+errors, strategy admission/release/quit waiting and local-main-only authority. `credential.rs:tests` covers queued refusal
 and quit waiting, file identity/alias rejection, bounded dummy input and status
 mapping, bounded/closed frames, and one-use/duplicate expectations. These
 controlled checks do not themselves prove real prompt refusal or packaged UI

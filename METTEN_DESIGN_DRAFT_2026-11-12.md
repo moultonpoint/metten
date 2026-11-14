@@ -181,7 +181,7 @@ Acceptance must also establish purchase/partial-fill/no-fill/settlement behavior
 ## 15. Unresolved engineering evidence
 
 Engineering owns technical discovery and proof within the agreed behavior:
-- The [format-2 reference](docs/strategies/reference.md) defines the implemented grammar, named sources, selectors, checkpoints, timing and errors; [issue #4](docs/verification/issue-4.md#current-evidence-index) records bounded controlled evidence. Connected integration remains outstanding, and the [drift report](docs/egm/2026-11-14_DRIFT_REPORT.md) identifies a remaining resource-error diagnostic gap. Do not invent deferred D/F inputs or rules.
+- The [format-2 reference](docs/strategies/reference.md) defines the implemented grammar, named sources, selectors, checkpoints, timing and errors; [issue #4](docs/verification/issue-4.md#current-evidence-index) records bounded controlled evidence. Connected integration remains outstanding, and the [drift report](docs/egm/2026-11-14_DRIFT_REPORT.md) records the resource-error diagnostic follow-up and its evidence. Do not invent deferred D/F inputs or rules.
 - Provider feasibility and actual access checks, BRTI entitlement/cost, licensing and retention rights, missing-source experience, and all unresolved research facts in section 9.
 - Worst-case reservations including fees, holdings, and in-flight attempts; daily accounting/reset with unsettled holdings; threshold interactions; and resumption mechanics. Preserve skip-over-resize and current-market finish behavior.
 - IOC mapping, recovery identity, duplicate prevention, rejected orders, insufficient funds, unknown outcomes, retry/freshness rates and rate limits, and long-gap failures. Thresholds and rates are not chosen constants.

@@ -572,3 +572,26 @@ Before append: **69475 bytes; SHA-256 `4c25e4fdf26cd1a327344531530fabf330f75df36
 | tests/README.md | `0f002691ec7be46ba6326fa66763fbaecfaa44a5ad87df2a1bd38d1401174da8` |
 
 No tests/builds, browser/apps/containers, credentials/accounts, private runtime access, remote checks, council/design reviews or trading were run. Existing acceptance evidence remains historical and version-bounded. The two deferred findings remain open for separate work.
+
+---
+
+## F12 diagnostic correction and Sol review — 2026-11-14T10:48:21.737765-06:00
+
+Connor authorized fixing the memory-limit error and running tests with Ponytail full and sol-loop. **F12 is resolved locally; F8's private security-reporting destination remains unresolved.** No limit, calculation, saved-version format, strategy JSON, dependency, permission or trading behavior was changed.
+
+Memory-over-budget imports now report total required bytes, allowed bytes, the non-history reserve and each calculation's history cost including side expansion, with guidance to shorten lookbacks/remove historical measurements and preview again. Calculations use safe indexed JSON locations instead of echoed author names/identifiers. The existing accepted_form field remains a serialized string; Rust uses Cow so ordinary runtime errors remain borrowed static text and only the import rejection builds owned details. The existing metadata planner charges the final RuleError layout through size_of; fresh resource checks cover that layout.
+
+Checks executed with /Users/connormoulton/.cargo/bin/cargo:
+- The enhanced public budget test failed before the fix (root error path rather than measurement detail), then passed. It verifies exact total/limit/reserve/per-node costs, Engine preview/save error propagation and string serialization, no saved row after rejection, and acceptance after removing one average.
+- Added public coverage verifies doubled YES/NO history cost, no echoed author markers, acceptance after shortening the lookback and a distinct generic error for numeric-instance overload.
+- cargo test --workspace --locked -- --nocapture: **101 passed**, including all 21 resource/continuation unit checks; two hour fixtures intentionally ignored in debug. Independent combined heap peak 236542576 bytes with 230400064 history bytes; maximum measured combined record work plus library bounds 2907. These are controlled fixture measurements, not production capacity.
+- cargo test -p metten-engine --release --locked --test strategy -- --ignored --nocapture: **both hour tests passed**, each reporting allocated_bytes=65988608; exact-contract elapsed 7664 ms, underlying-average elapsed 8244 ms.
+- npm run check: TypeScript and **12 interface tests passed**. Workspace all-target Clippy with -D warnings, formatting and whitespace checks passed.
+
+Sol-loop ledger: **1 round, GPT-6.1 Sol via Codex, high reasoning effort; APPROVE, no findings.** No fixed/declined reviewer items; no reviewer-requested changes. Usage was not exposed. Reviewer assessed supplied check evidence, not independent reruns. Scoped code diff before/after review stayed **2 files, +110/-7**. Review base was origin/main merge-base 96ad37ab547751f1f3b4b55d392bc42be3563e9c; local documentation commit 69ce4a3 is outside the scoped code diff.
+
+Reviewed and final code identities match:
+- crates/engine/src/strategy.rs: 330994592799c22bb12685dbe55a5c4ebc1b0ac3f5765f26222b168a6a760575
+- crates/engine/tests/strategy.rs: 7e4476d008eeb2e26d43cb3a50305a5a6a23e3b3636e0e79d3ff45cf58b7a540
+
+Before this append: **74143 bytes; SHA-256 `d531682e264804c7ecd8f46dd6b64ea8dc058bb4fa70406eb6db9538ebb0ca85`**. The exact historical prefix is preserved and verified after appending. Product-spec wording now points to this follow-up without calling F12 an outstanding gap; no README or historical observation was rewritten. No native/browser/package walkthrough, provider/real-credential access, app/trading operations, commit or push occurred. No fresh release/live acceptance is implied.

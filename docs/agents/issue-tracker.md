@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Repository: `connorreganmoulton-web/metten`. GitHub Issues is the work tracker; the committed product specification is the behavioral source of truth. Issues link to it rather than maintain a competing specification.
+Repository: `moultonlavah/metten`. GitHub Issues is the work tracker; the committed product specification is the behavioral source of truth. Issues link to it rather than maintain a competing specification.
 
 Use `gh` for tracker operations and explicit repository arguments when outside this working copy. Read each issue's full body and comments before working. Use a UTF-8 body file with `--body-file` for multiline creation, edits or comments.
 

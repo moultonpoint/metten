@@ -4,7 +4,7 @@ Metten is in early development. The current foundation is non-trading; paper and
 
 ## Find work
 
-Check [open issues](https://github.com/connorreganmoulton-web/metten/issues) and their blockers before starting. Discuss substantial changes in an issue first. The [implementation plan](docs/implementation-plan.md) describes the planned sequence, and [ADR 0001](docs/adr/0001-rust-engine-and-tauri-boundaries.md) explains the engine and desktop boundary.
+Check [open issues](https://github.com/moultonlavah/metten/issues) and their blockers before starting. Discuss substantial changes in an issue first. The [implementation plan](docs/implementation-plan.md) describes the planned sequence, and [ADR 0001](docs/adr/0001-rust-engine-and-tauri-boundaries.md) explains the engine and desktop boundary.
 
 ## Set up and check changes
 
@@ -14,10 +14,12 @@ Run checks relevant to your change. The current automated workflow runs these on
 
 ```sh
 python3 tests/credential-runner.test.py
+python3 tests/check-staged.test.py
 npm run check
 npm run build
 cargo fmt --all --check
 cargo test --workspace --locked
+cargo test -p metten-engine --release --locked --test strategy -- --ignored --nocapture
 cargo clippy --workspace --all-targets --locked -- -D warnings
 npm run tauri build -- --bundles app
 ```

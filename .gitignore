@@ -3,6 +3,9 @@
 docs/research/
 .scratch/
 
+# Confidential vulnerability reports and local evidence copies
+/private-security/
+
 # Local credentials, runtime state, and build output
 .env
 .env.*

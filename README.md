@@ -67,18 +67,18 @@ Brand artwork and font provenance are documented in the [brand guide](assets/bra
 
 ## Implementation documentation and drift checks
 
-The [EGM baseline](docs/egm/README.md) maps the maintained repository outside issue #4 to code-grounded component contracts and includes a repeatable drift-report request. Issue #4, including its additions in shared files, is explicitly excluded. These contracts describe the implemented non-trading foundation; the product specification and accepted ADRs remain authoritative for intended behavior.
+The [EGM coverage map](docs/egm/README.md) links code-grounded component contracts through completed issue #4 and includes a repeatable drift-report request. These contracts cover the non-trading session, dummy credential integration and local strategy rules/version workflow; the product specification and accepted ADRs remain authoritative for intended behavior.
 
 ### Interface
 
-- [Rust crates](crates/README.md) own controlled session state and recording; [native desktop integration](src-tauri/README.md) selects storage, validates requests and hosts the isolated credential proof; [the interface](src/README.md) displays native state and requests actions.
+- [Rust crates](crates/README.md) own controlled session state, rule validation/evaluation and immutable version recording; [native desktop integration](src-tauri/README.md) selects storage, validates requests and hosts the isolated credential proof; [the interface](src/README.md) displays native state and requests actions.
 - [Tests](tests/README.md), [native verification tooling](scripts/README.md), [CI](.github/workflows/checks.yml), [assets](assets/README.md), and [documentation](docs/README.md) explain supporting boundaries and evidence.
 - `package.json` defines `dev`, `check`, `build` and `tauri`. Development uses loopback port 5173 with `--strictPort`; checking performs TypeScript validation and JavaScript tests; building runs TypeScript and Vite. `tsconfig.json` checks `src` with strict ES2022/DOM settings and emits no TypeScript output.
 - `Cargo.toml` groups `crates/engine` and `src-tauri` with resolver 2. `rust-toolchain.toml` pins Rust 1.100.0 with rustfmt/clippy. `Cargo.lock` and `package-lock.json` record resolved dependencies; use locked Cargo checks and `npm ci` for reproducible installation.
 
 ### Invariants
 
-The screen does not own saved truth. Accepted requests are not confirmed writes; errors preserve last confirmed history. The current foundation has no trading operation. Credentials are dummy-only and unavailable on an ordinary launch. Later product features and unfinished issue #4 work are outside this baseline's implementation claims.
+The screen does not own saved truth. Accepted requests are not confirmed writes; errors preserve last confirmed history. The current foundation has no trading operation. Credentials are dummy-only and unavailable on an ordinary launch. The [issue #4 evidence](docs/verification/issue-4.md#current-evidence-index) records bounded local strategy checks. The controlled rule evaluator is separate from session Start/Pause; connected sources, paper/live execution and release readiness remain later work.
 
 ### Side Effects
 

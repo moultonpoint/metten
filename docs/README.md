@@ -2,15 +2,16 @@
 
 ## Overview
 
-The [product specification](../METTEN_DESIGN_DRAFT_2026-11-12.md) owns intended behavior. Accepted [architecture](adr/0001-rust-engine-and-tauri-boundaries.md) and [licensing](adr/0002-mit-license.md) decisions explain binding choices. Code-grounded READMEs describe the implemented foundation and do not override those sources.
+The [product specification](../METTEN_DESIGN_DRAFT_2026-11-12.md) owns intended behavior. Accepted [architecture](adr/0001-rust-engine-and-tauri-boundaries.md) and [licensing](adr/0002-mit-license.md) decisions explain binding choices. Code-grounded READMEs describe the implemented non-trading foundation and local strategy workflow and do not override those sources.
 
 ## Interface
 
 - [EGM baseline and coverage](egm/README.md): component contracts, exclusions, reporting instructions and dated drift reports.
 - [Implementation plan](implementation-plan.md): issue sequence; GitHub issue bodies own acceptance criteria and current task status.
-- [Issue #2 verification](verification/issue-2.md) and [issue #3 verification](verification/issue-3.md): historical execution evidence with bounded results. Later checkpoints supersede earlier incomplete dispositions; neither is a current runtime or release guarantee.
-- [Issue tracker](agents/issue-tracker.md), [triage labels](agents/triage-labels.md) and [domain conventions](agents/domain.md): repository working rules, complemented by root [AGENTS.md](../AGENTS.md) and [GLOSSARY.md](../GLOSSARY.md).
-- `proposals/`: issue #4 planning and review artifacts, entirely excluded from this baseline. No files there are approved implemented contracts for this report.
+- [Issue #2 verification](verification/issue-2.md) and [issue #3 verification](verification/issue-3.md): historical execution evidence with bounded results. Later checkpoints supersede earlier incomplete dispositions; neither is a current runtime or release guarantee. [Issue #4 verification](verification/issue-4.md#current-evidence-index) indexes the completed local strategy phases and later review corrections.
+- [Issue tracker](agents/issue-tracker.md), [triage labels](agents/triage-labels.md) and [domain conventions](agents/domain.md): repository working rules, complemented by [evidence/checkpoint verification](agents/verification.md), root [AGENTS.md](../AGENTS.md) and [GLOSSARY.md](../GLOSSARY.md).
+- [Strategy guides](strategies/README.md): human and agent authoring, the shared field reference and learning example.
+- `proposals/`: historical planning and review artifacts. The [operative issue #4 design](proposals/issue-4-egm/strategy-rules-design.md) supplies the approved contract identified by its approval chronology and the issue #4 evidence index; other proposals are not automatically requirements.
 
 ## Invariants
 

@@ -4,13 +4,13 @@
 
 `metten-engine` is the Rust library for a controlled, persisted non-trading session. It provides desktop-independent controls and saved history as the first implementation slice of the [Gen 1 specification](../../METTEN_DESIGN_DRAFT_2026-11-12.md). Future product behavior belongs to the [implementation sequence](../../docs/implementation-plan.md); it must not be inferred from this foundation.
 
-This contract covers Git `b1eb58c` foundation behavior that remains unchanged in the working copy. Ongoing issue #4 strategy work, including its source, tests, import/version APIs and schema changes, is excluded. Mixed-file exclusions are detailed in the source contract.
+This contract also covers completed issue #4: controlled rule validation/evaluation and local immutable versions. The [shared reference](../../docs/strategies/reference.md) defines format-2 meanings; [issue #4 evidence](../../docs/verification/issue-4.md#current-evidence-index) records bounded local checks. The evaluator is separate from desktop session execution.
 
 ## Interface
 
-- [Source contract](./src/README.md): `Engine::{open, request, snapshot, stop_and_save}`, `Action::{Start, Pause, Advance}`, `Status::{Stopped, Running, Paused}`, `Snapshot`, `Record`, and `WriterSettings`.
-- [Cargo manifest](./Cargo.toml): library package `metten-engine`, version `0.1.0`, Rust edition 2024, minimum Rust `1.100`. The foundation uses `rusqlite` with bundled SQLite and `serde`; `tempfile` and `serde_json` support foundation tests. The working-copy promotion of `serde_json` to a runtime dependency belongs to excluded issue #4 work.
-- [Session tests](./tests/session.rs) exercise the public library against temporary real SQLite files. The tests directory receives no separate contract because it contains verification code only.
+- [Source contract](./src/README.md): `Engine::{open, request, snapshot, stop_and_save}`, `Action::{Start, Pause, Advance}`, `Status::{Stopped, Running, Paused}`, `Snapshot`, `Record`, and `WriterSettings`, plus `ValidatedStrategy`, `Evaluator`, strategy request/response types and version operations.
+- [Cargo manifest](./Cargo.toml): library package `metten-engine`, version `0.1.0`, Rust edition 2024, minimum Rust `1.100`. Runtime dependencies are `rusqlite` with bundled SQLite, `serde` and `serde_json`; `tempfile` supports tests.
+- [Session tests](./tests/session.rs) exercise the public library against temporary real SQLite files. [Strategy tests](./tests/strategy.rs) cover the public controlled rule boundary; [storage tests](./tests/strategy_storage.rs) cover immutable versions, compatibility, migration and request limits.
 
 ## Invariants
 
@@ -22,17 +22,17 @@ This contract covers Git `b1eb58c` foundation behavior that remains unchanged in
 
 ## Side Effects
 
-- Opening creates/opens a local SQLite workspace and lock file; SQLite may create auxiliary files. `Recorder` reads/writes `session_events`, whose contract is specified under [source](./src/README.md).
+- Opening creates/opens a local SQLite workspace and lock file; SQLite may create auxiliary files. `Recorder` reads/writes `session_events` and appends immutable `strategy_versions`, whose contract is specified under [source](./src/README.md).
 - The engine owns a recorder thread and bounded control queue. Controls append records; `stop_and_save` waits for durable recording confirmation, while Drop only closes/joins the worker.
-- The foundation makes no network calls and handles no credentials or money. Excluded strategy work is not covered by these side-effect claims.
+- The foundation makes no network calls and handles no credentials or money. Pure rule evaluation uses controlled in-memory evidence; preview writes no version, while save appends a revalidated version.
 
 ## Verification
 
 Run from the repository root:
 
 ```sh
-cargo test -p metten-engine --test session --locked
-cargo test -p metten-engine --lib pause_stays_effective_after_start_saves_before_pause_saves --locked
+cargo test -p metten-engine --locked
+cargo test -p metten-engine --release --locked --test strategy -- --ignored --nocapture
 ```
 
-The [source contract](./src/README.md) maps checks to behavior. [Issue #2 evidence](../../docs/verification/issue-2.md) records prior local tests and packaged-app checks, with their distribution and physical power-loss limits. Its pending-CI and review dispositions describe that historical checkpoint, not current PR status. No tests/builds were rerun for this documentation change; these commands still compile the current mixed source and do not establish issue #4 acceptance.
+The [source contract](./src/README.md) maps checks to behavior. [Issue #2 evidence](../../docs/verification/issue-2.md) records prior local tests and packaged-app checks, with their distribution and physical power-loss limits. Its pending-CI and review dispositions describe that historical checkpoint, not current PR status. No tests/builds were rerun for this documentation change. The issue #4 record distinguishes controlled rules, local packaged import proof and later unproven provider/trading integration.

@@ -8,6 +8,8 @@ Check [open issues](https://github.com/moultonlavah/metten/issues) and their blo
 
 ## Set up and check changes
 
+For features, fixes, refactors, tests, tooling and reviews, use the [maintainability standard](docs/agents/maintainability.md): find the owner and contract, make the smallest complete change, and leave meaningful verification and a clear route for the next contributor.
+
 Use macOS, Node.js 24 or later, Apple's Xcode Command Line Tools, and the Rust toolchain pinned in `rust-toolchain.toml`. Run `npm ci` and `npm run tauri dev` to start the local foundation. The README explains its test session and isolated workspace.
 
 Run checks relevant to your change. The current automated workflow runs these on macOS:

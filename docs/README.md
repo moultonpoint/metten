@@ -7,6 +7,7 @@ The [product specification](../METTEN_DESIGN_DRAFT_2026-11-12.md) owns intended 
 ## Interface
 
 - [Agent code map](agents/code-map.md): task-to-source routes, connected callers, tests and component contracts. Start here to locate implementation; use the storage map below to place documents.
+- [Maintainability standard](agents/maintainability.md): the required change/review recipe, design decisions and adoption plan for keeping future programming work understandable and local.
 - [EGM baseline and coverage](egm/README.md): component contracts, exclusions, reporting instructions and dated drift reports.
 - [Implementation plan](implementation-plan.md): issue sequence; GitHub issue bodies own acceptance criteria and current task status.
 - [Issue #2 verification](verification/issue-2.md) and [issue #3 verification](verification/issue-3.md): historical execution evidence with bounded results. Later checkpoints supersede earlier incomplete dispositions; neither is a current runtime or release guarantee. [Issue #4 verification](verification/issue-4.md#current-evidence-index) indexes the completed local strategy phases and later review corrections.

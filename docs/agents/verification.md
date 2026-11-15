@@ -33,3 +33,9 @@ Markdown hard breaks and verbatim source captures can intentionally contain whit
 ## Review responsibilities
 
 Reviewers check whether claimed behavior and resource bounds cover the actual changed paths and final source. Passing sample workloads do not replace a general argument. Changes to the pinned Rust toolchain require reviewing the standard-library layout and movement assumptions in the processing and memory proofs. Keep these judgement calls here; mechanical failures belong in executable checks.
+
+## Maintainability review
+
+Apply the [maintainability standard](maintainability.md) to each programming change. In the existing issue/PR summary, identify the expected change path before editing, then explain departures from it, any added structure and current need, the meaningful check and remaining limits. Update the owning contract/map only where affected. For a small change, a few sentences suffice.
+
+The reviewer checks those claims against the changed code and callers: ordinary changes remain local, state has a clear owner, and simplification preserves failure behavior and safety. Request a correction for a concrete violation; record unrelated improvement opportunities separately. Documentation edits need affected-link and consistency checks, not application execution solely to satisfy this review.

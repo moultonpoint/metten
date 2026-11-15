@@ -22,7 +22,7 @@ For evidence navigation, bounded source reads, coordinated delegation and mixed-
 
 ### Issue tracker
 
-Track work in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+When opening, triaging, assigning, starting or closing issues, follow [the issue workflow](docs/agents/issue-tracker.md).
 
 ### Triage labels
 

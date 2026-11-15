@@ -19,9 +19,9 @@ The reporting input is this coverage map plus the following linked contracts. Pa
 | [Regression tests](../../tests/README.md) | `tests/*.test.mjs`, `tests/credential-runner.test.py`, `tests/check-staged.test.py`; engine and desktop embedded/integration tests are covered in their component contracts. |
 | [Verification tools](../../scripts/README.md) | `scripts/verify-credential.swift`, including its packaged mode/process-only self-test, and `scripts/check-staged.py`; the [verification guide](../agents/verification.md) owns staged-check usage/failure handling. |
 | [Issue workflow](../agents/issue-tracker.md) | `.github/ISSUE_TEMPLATE/*.md` and `.github/pull_request_template.md`; intake, acceptance and closure procedure. |
-| [CI](../../.github/workflows/checks.yml) | `.github/workflows/checks.yml`. |
+| [CI](../../.github/workflows/checks.yml), [build-action maintenance](../../CONTRIBUTING.md#maintain-build-action-pins) | `.github/workflows/checks.yml`, `.github/dependabot.yml`. |
 | [Assets](../../assets/README.md), [brand kit](../../assets/brand/README.md) | `assets/icon.svg`; all maintained files under `assets/brand/`: README, specifications, guide, editable SVG master, prepared SVG/PNG/PDF exports and font license/provenance records. Desktop icons are owned by the desktop contract. Static assets have usage/ownership coverage; this pass does not certify every rendered export. |
-| [Documentation map](../README.md) | `docs/implementation-plan.md`, both `docs/adr/*.md`, `docs/agents/*.md`, `docs/verification/issue-{2,3,4}.md`; root `AGENTS.md`, `CONTRIBUTING.md`, `GLOSSARY.md`, `LICENSE`, `SECURITY.md`, product specification. Each retains its existing authority/purpose. |
+| [Documentation map](../README.md) | `docs/implementation-plan.md`, both `docs/adr/*.md`, `docs/agents/*.md`, `docs/verification/issue-{2,3,4,28,31}.md`; root `AGENTS.md`, `CONTRIBUTING.md`, `GLOSSARY.md`, `LICENSE`, `SECURITY.md`, product specification. Each retains its existing authority/purpose. |
 | This baseline and [initial report](2026-11-13_DRIFT_REPORT.md) | `docs/egm/README.md` and dated reports in this directory. Reports are observations, not additional specifications. |
 
 ### Issue #4 ownership and authority

@@ -10,8 +10,10 @@ Classic Foundation protection, restricted workflow defaults and manual merges ar
 unchanged. No test candidate was merged. This is bounded merge-enforcement evidence,
 not security/release acceptance or proof of perfect static analysis.
 
-Issues #30/#40 remain open for the explicitly retained neutral/external-fork
-evidence limits; final review is complete with the corrections recorded below. Historical preparation and pending statements below
+The owner explicitly removed neutral Rust-job and external-fork tests as closure
+requirements after reviewing the verified results. Those cases remain untested
+limits, not blockers. Final review is complete with the corrections recorded below;
+the remaining delivery step is publishing this evidence and closing #40, then #30. Historical preparation and pending statements below
 are superseded only where the final results provide evidence.
 
 ## Final observed results — 16 November 2026 UTC
@@ -86,8 +88,8 @@ real credentials, provider access, paid service or trading was used.
   test under ruleset 27343255. No external-fork PR exists in the repository's
   returned PR inventory; no safe representative fork candidate was available.
   External-fork upload/eligibility behavior remains unverified. Permissions were
-  not broadened. The approved plan explicitly keeps #40 incomplete when this
-  restricted-PR evidence is unavailable, so neither issue is closed here.
+  not broadened. The owner subsequently removed these extra test requirements
+  from closure scope. No claim of neutral-job or external-fork verification is made.
 - Hosted runs above cover the final restored test source, not the local evidence
   documentation commits. Final document checks/review are recorded in the next section;
   no application rerun is required solely for documentation under verification.md.
@@ -128,7 +130,7 @@ preparation reviews, these reviews include independent published-entry discovery
 Summary: Standards — one supported tracker correction, resolved; Spec — three
 supported documentation corrections plus the same tracker reconciliation, resolved.
 No unresolved settings/implementation finding. Neutral-job and restricted-PR gaps
-remain acceptance limits, not passed tests. Lead checked the complete affected
+remain untested limits, not passed tests; the owner removed them as closure requirements. Lead checked the complete affected
 settings/analysis/eligibility flow; no second review round was needed for these
 bounded wording/traceability corrections.
 
@@ -258,8 +260,9 @@ Historical proposal status before approval: prepared, not applied or tested.
 The final observed results above supersede this historical status. The remaining
 work is tracked by child [#40](https://github.com/moultonlavah/metten/issues/40).
 Its acceptance explicitly requires exact owner authority before protection or
-security-setting changes. The owner subsequently approved this exact payload and bounded tests; both
-issues remain open for the retained evidence limits recorded above.
+security-setting changes. The owner subsequently approved this exact payload and bounded tests, then
+removed the neutral-job/external-fork cases as closure requirements. The final
+observed results and current evidence index supersede those earlier plan gates.
 
 Expected change path: GitHub owns merge eligibility; the existing CodeQL workflow
 owns analysis and uploads. Add one repository ruleset, retain the existing branch
@@ -394,6 +397,10 @@ no eligibility or missing/failed-analysis guarantee is claimed yet.
 
 ### Controlled acceptance and rollback
 
+Historical test plan: the owner subsequently removed steps 4 and 5 as closure
+requirements. Preserve them here as the prior plan and disclosed untested limits;
+they do not authorize new permissions, accounts or testing.
+
 After approval, re-read main, alerts and all settings. Save the complete baseline
 responses outside source; stop if unrelated settings changed. Create the ruleset
 and save its returned numeric ID and read-back response. Confirm effective rules
@@ -425,12 +432,12 @@ rule evaluations where exposed, and GitHub merge eligibility for each candidate:
    older head's results. If GitHub treats either as eligible, the proposal fails;
    leave both issues open and prepare the smallest supported correction rather
    than claiming a reliable gate.
-4. Neutral conclusion: GitHub also accepts neutral required-check conclusions.
+4. Neutral conclusion (removed from closure scope by owner): GitHub also accepts neutral required-check conclusions.
    Check whether the existing Actions/analyzer path can produce one without forging
    an Actions check or using additional credentials. If supported, require blocked
    eligibility without fresh Rust analysis. If not, record this as untested; do not
    claim neutral-case enforcement or treat another app's neutral check as equivalent.
-5. Restricted PRs: inspect a Dependabot and external-fork PR, when safely available,
+5. Restricted PRs (removed from closure scope by owner): inspect a Dependabot and external-fork PR, when safely available,
    for upload permissions, all four current categories and blocked/eligible states.
    Do not broaden token permissions, use `pull_request_target`, enable access to
    fork secrets or execute untrusted code with a privileged token. GitHub documents

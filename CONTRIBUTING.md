@@ -100,7 +100,8 @@ for coverage limitations and the verified enforcement/test results. The owner-ap
 merge rule is active under #40. Controlled tests proved missing, failed,
 incomplete and skipped Rust analysis blocked merging, while complete analysis
 allowed eligibility. The evidence record retains neutral-job and external-fork
-verification limits; no claim of complete security acceptance is made.
+verification limits, which the owner excluded from closure requirements. No claim
+of complete security acceptance is made.
 
 The CodeQL `init` and `analyze` actions share one reviewed upstream release SHA.
 Update both together through the documented Dependabot/pin-maintenance route, with the

@@ -8,7 +8,7 @@ The [product specification](../METTEN_DESIGN_DRAFT_2026-11-12.md) owns intended 
 
 - [Agent code map](agents/code-map.md): task-to-source routes, connected callers, tests and component contracts. Start here to locate implementation; use the storage map below to place documents.
 - [Maintainability standard](agents/maintainability.md): the required change/review recipe, design decisions and adoption plan for keeping future programming work understandable and local.
-- [EGM baseline and coverage](egm/README.md): component contracts, exclusions, reporting instructions and dated drift reports.
+- [EGM baseline and coverage](egm/README.md): component contracts, reporting instructions and dated drift reports. The recurring [Daily Drift Report excludes issue #4](egm/README.md#daily-audit-outside-issue-4); the separately authorized expanded audit includes it.
 - [Implementation plan](implementation-plan.md): issue sequence; GitHub issue bodies own acceptance criteria and current task status.
 - [Issue #28 verification](verification/issue-28.md): build-action pin review and update-route evidence, with automation limits. Recorded acceptance and CI status are historical, not current confirmation.
 - [Issue #31 verification](verification/issue-31.md): non-trading packaged checklist and bounded historical results, including missing evidence and limitations; these do not establish current acceptance or remote CI status.

@@ -53,6 +53,14 @@ failed/incomplete and fully passing cases remain outstanding.
 
 Next candidate `d77432f70ce55dc1e5601bf954339eedabd37437` restores the Rust matrix
 entry and inserts only a Rust-specific step between initialization and analysis.
+Main subsequently advanced to `890af2eaff4fa525163bc00339ce081dbeeee4bf` (only
+AGENTS.md and verification procedure changed). Candidate `d77432f` became behind,
+so it is excluded from analyzer-enforcement acceptance. Replacement candidate
+`a4ebf2a092b9ee2a0185872b1aa922e1a7e6ad51` includes that new main as a merge parent
+and repeats the same controlled analyzer failure. The disposable branch tree
+preserves current main except the intended scanner experiment; selected local
+code is untouched.
+
 It checks the expected database exists and the owned temporary destination does
 not, then moves that database. The analyzer must itself report failure; a path
 precondition failure would invalidate this experiment. No application, action
@@ -75,23 +83,25 @@ map's existing CI route stays valid.
 
 ### Published instruction baseline
 
-This existing lead session was explicitly refreshed after the owner supplied the
-published-instruction rule. A fresh `git ls-remote --symref origin HEAD` identified
-`https://github.com/moultonlavah/metten.git`, default branch `main`, published commit
-`a22a9a9188b683e07be141702e93295d83a4ade1`. Read root `AGENTS.md` and its applicable
-maintainability, verification, code-map, issue-tracker, triage and domain procedures
-from that immutable commit. The published tree has no nested AGENTS/CLAUDE file or
-additional instruction-discovery procedure. Selected local instructions and task
-acceptance were also read. No required guidance was unavailable or in conflict.
-The published files match the selected checkout's guidance byte-for-byte; no code,
-index or tracking ref was changed by discovery.
+Current authoritative guidance baseline: `890af2eaff4fa525163bc00339ce081dbeeee4bf`,
+resolved freshly from `https://github.com/moultonlavah/metten.git`, default `main`,
+at 2026-11-16T01:58:32.068607+00:00. Selected local code was
+`aaaa3f1` with a clean working tree. Read the newly published root `AGENTS.md` and
+linked `docs/agents/verification.md` from that immutable commit, including its new
+published-instruction discovery procedure. Other applicable root-linked standards
+(maintainability, code-map, issue-tracker, triage and domain) have identical blobs
+to the previously read `a22a9a9` baseline; their unchanged guidance is reused.
+Published/local inventories have only root AGENTS.md, no nested AGENTS/CLAUDE files.
+Local instructions and owner-approved task limits still apply; no missing guidance
+or consequential conflict was found. Fetch retrieved missing objects without
+changing selected code, index, working files or tracking refs.
 
-The completed reviews predate the new explicit refresh rule; their independent
-immutable-entry discovery was not attested and is not claimed retroactively.
-Their findings remain useful evidence against identical guidance. Any further
-review/session must independently load the published root entry, pin this shared
-baseline, and refresh it at handoff or delivery. The settings proposal remains
-approval-pending; this refresh grants no additional authority.
+The earlier explicit refresh independently resolved `a22a9a9` before publication
+of PR #47. The subsequent known update prompted this replacement baseline. No
+child review is currently active. Historical Standards/Spec reviews predate the
+new discovery rule and remain unrefreshed for reuse; any further review must
+independently traverse the published root entry at this pinned baseline. The rule
+changes evidence discovery, not the approved settings or trading authority.
 
 ### Refreshed baseline
 

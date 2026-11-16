@@ -17,6 +17,7 @@ Run checks relevant to your change. The current automated workflow runs these on
 ```sh
 python3 tests/credential-runner.test.py
 python3 tests/check-staged.test.py
+npm run lint
 npm run check
 npm run build
 cargo fmt --all --check
@@ -25,6 +26,29 @@ cargo test -p metten-engine --release --locked --test strategy -- --ignored --no
 cargo clippy --workspace --all-targets --locked -- -D warnings
 npm run tauri build -- --bundles app
 ```
+
+`npm run lint` runs pinned Oxlint correctness rules and type-aware
+`typescript/no-floating-promises` with zero warnings allowed; `npm run lint:fix`
+uses the same command/configuration with safe automatic fixes. Review fixes before
+committing. The single [configuration](.oxlintrc.json) covers maintained `src`
+TypeScript (including declarations and `view.ts`) and all `tests` JavaScript,
+including `ui-harness.mjs`. Browser globals apply to source; Node globals to tests.
+There are currently no maintained JS/TS configuration files outside those paths;
+add any future configuration entry points to both npm commands. Dependencies,
+build/generated output and private files are excluded. Python, Swift, Rust,
+formatting and hooks are outside this lint command.
+
+Type-aware rules use resolved TypeScript programs; JavaScript tests receive
+ordinary correctness checks, not a new JS type-checking promise. Declaration
+files are selected, but `skipLibCheck` and applicable-rule limits still apply.
+`npm run check` remains the implementation/type-contract check. The promise rule
+uses its default `ignoreVoid: true`: bare floating typed promises fail, while
+handled chains and explicit `void` pass. **Discarding a rejected promise with
+`void` can still produce an unhandled rejection.** Lint does not establish safe
+error handling at every site, trading correctness or recovery correctness.
+See [issue #53 evidence](docs/verification/issue-53.md) for coverage and enforcement
+probes. Foundation runs this same lint command after installation, alongside all
+existing checks; repository merge/security settings are maintained separately.
 
 Describe what you changed, link the issue, and report checks and any limitations in your pull request. Do not present paper or simulated results as proof of live behavior.
 

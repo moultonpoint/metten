@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "unicorn",
+    "oxc"
+  ],
+  "categories": {
+    "correctness": "warn"
+  },
+  "env": {
+    "browser": true
+  },
+  "overrides": [
+    {
+      "files": [
+        "tests/**/*.mjs"
+      ],
+      "env": {
+        "browser": false,
+        "node": true
+      }
+    }
+  ],
+  "rules": {
+    "typescript/no-floating-promises": "error"
+  },
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/target/**",
+    "src-tauri/gen/**",
+    "private-security/**",
+    ".scratch/**"
+  ]
+}

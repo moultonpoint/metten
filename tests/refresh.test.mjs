@@ -1,33 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { stripTypeScriptTypes } from 'node:module';
-import { runInNewContext } from 'node:vm';
-import { setImmediate } from 'node:timers/promises';
-import { presentation, strategyFailure } from '../src/view.ts';
+import { harness } from './ui-harness.mjs';
 
-test('failed refresh does not assert stopped and still lets the user attempt Pause', async () => {
-  const elements = new Map();
-  function element(id) {
-    if (!elements.has(id)) elements.set(id, {
-      textContent: '', disabled: false, handlers: {},
-      addEventListener(event, handler) { this.handlers[event] = handler; },
-      append() {}, replaceChildren() {},
-    });
-    return elements.get(id);
-  }
+test('failed refresh does not assert stopped and still lets the user attempt Pause', async t => {
   const controls = [];
   let reads = 0;
-  let nextPoll;
-  const source = stripTypeScriptTypes(await readFile(new URL('../src/main.ts', import.meta.url), 'utf8'))
-    .replace(/^import .*;\n/gm, '');
-  runInNewContext(source, {
-    document: { getElementById: element, createElement: element },
-    window: { setTimeout(callback) { nextPoll = callback; } },
-    presentation, strategyFailure,
-    async invoke(command, args) {
-      if (command === 'strategies') return { kind: 'versions', versions: [], next_cursor: null };
-      if (command === 'control') { controls.push(args.action); return; }
+  const h = await harness(t, {
+    control(args) { controls.push(args.action); },
+    snapshot() {
       if (++reads > 1) throw new Error('Controlled status-read failure');
       return {
         running: true, pending: 0, recording_error: null,
@@ -36,46 +16,31 @@ test('failed refresh does not assert stopped and still lets the user attempt Pau
       };
     },
   });
-  await setImmediate();
+  const { element } = h;
+  await h.flush();
   assert.match(element('status').textContent, /Running/);
-  nextPoll();
-  await setImmediate();
+  h.timers.shift().callback();
+  await h.flush();
   assert.equal(element('status').textContent, 'Session status unavailable');
   assert.equal(element('start').disabled, true);
   assert.equal(element('advance').disabled, true);
   assert.equal(element('pause').disabled, false);
   assert.deepEqual(controls, [], 'a failed read has not stopped the engine');
   element('pause').handlers.click();
-  await setImmediate();
+  await h.flush();
   assert.deepEqual(controls, ['pause']);
 });
 
 for (const olderFails of [false, true]) {
   for (const newerFails of [false, true]) {
-    test(`older status ${olderFails ? 'failure' : 'success'} cannot overwrite newer ${newerFails ? 'failure' : 'Pause'}`, async () => {
-      const elements = new Map();
-      function element(id) {
-        if (!elements.has(id)) elements.set(id, {
-          textContent: '', disabled: false, handlers: {},
-          addEventListener(event, handler) { this.handlers[event] = handler; },
-          append() {}, replaceChildren() {},
-        });
-        return elements.get(id);
-      }
+    test(`older status ${olderFails ? 'failure' : 'success'} cannot overwrite newer ${newerFails ? 'failure' : 'Pause'}`, async t => {
       const reads = [];
-      const source = stripTypeScriptTypes(await readFile(new URL('../src/main.ts', import.meta.url), 'utf8'))
-        .replace(/^import .*;\n/gm, '');
-      runInNewContext(source, {
-        document: { getElementById: element, createElement: element },
-        window: { setTimeout() {} }, presentation, strategyFailure,
-        invoke(command) {
-          if (command === 'strategies') return Promise.resolve({ kind: 'versions', versions: [], next_cursor: null });
-          return command === 'control' ? Promise.resolve()
-            : new Promise((resolve, reject) => reads.push({ resolve, reject }));
-        },
+      const h = await harness(t, {
+        snapshot: () => new Promise((resolve, reject) => reads.push({ resolve, reject })),
       });
+      const { element, elements } = h;
       element('pause').handlers.click();
-      await setImmediate();
+      await h.flush();
       assert.equal(reads.length, 2);
       const snapshot = status => ({
         running: status === 'running', pending: 0, recording_error: null,
@@ -84,12 +49,12 @@ for (const olderFails of [false, true]) {
       });
       if (newerFails) reads[1].reject('Latest status failure');
       else reads[1].resolve(snapshot('paused'));
-      await setImmediate();
+      await h.flush();
       assert.equal(element('status').textContent, newerFails ? 'Session status unavailable' : 'Paused · no test events running');
       const displayed = [...elements].map(([id, value]) => [id, value.textContent, value.disabled]);
       if (olderFails) reads[0].reject('Outdated status failure');
       else reads[0].resolve(snapshot('running'));
-      await setImmediate();
+      await h.flush();
       assert.deepEqual([...elements].map(([id, value]) => [id, value.textContent, value.disabled]), displayed);
       assert.equal(element('advance').disabled, true);
       assert.equal(element('pause').disabled, newerFails ? false : true);

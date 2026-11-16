@@ -27,6 +27,26 @@ and the contributor contract. No application code, new action, scanner framework
 compiler, dependency or source exclusion is needed for this proposal. The code
 map's existing CI route stays valid.
 
+### Published instruction baseline
+
+This existing lead session was explicitly refreshed after the owner supplied the
+published-instruction rule. A fresh `git ls-remote --symref origin HEAD` identified
+`https://github.com/moultonlavah/metten.git`, default branch `main`, published commit
+`a22a9a9188b683e07be141702e93295d83a4ade1`. Read root `AGENTS.md` and its applicable
+maintainability, verification, code-map, issue-tracker, triage and domain procedures
+from that immutable commit. The published tree has no nested AGENTS/CLAUDE file or
+additional instruction-discovery procedure. Selected local instructions and task
+acceptance were also read. No required guidance was unavailable or in conflict.
+The published files match the selected checkout's guidance byte-for-byte; no code,
+index or tracking ref was changed by discovery.
+
+The completed reviews predate the new explicit refresh rule; their independent
+immutable-entry discovery was not attested and is not claimed retroactively.
+Their findings remain useful evidence against identical guidance. Any further
+review/session must independently load the published root entry, pin this shared
+baseline, and refresh it at handoff or delivery. The settings proposal remains
+approval-pending; this refresh grants no additional authority.
+
 ### Refreshed baseline
 
 Read-only inspection on 15 November found main at

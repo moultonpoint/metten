@@ -97,9 +97,10 @@ Linux. Swift's standalone
 verification harness is not scanned. The scanner does not execute that harness
 or access credentials. See [issue #30 evidence](docs/verification/issue-30.md)
 for coverage limitations and the proposed enforcement/test plan. The owner-approved
-merge rule is active under #40, with controlled enforcement tests in progress.
-The rule is not accepted as complete until missing, failed and incomplete
-per-language analysis are proven to block merging and a passing candidate is eligible.
+merge rule is active under #40. Controlled tests proved missing, failed,
+incomplete and skipped Rust analysis blocked merging, while complete analysis
+allowed eligibility. The evidence record retains neutral-job and external-fork
+verification limits; no claim of complete security acceptance is made.
 
 The CodeQL `init` and `analyze` actions share one reviewed upstream release SHA.
 Update both together through the documented Dependabot/pin-maintenance route, with the

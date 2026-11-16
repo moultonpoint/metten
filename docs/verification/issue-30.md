@@ -2,16 +2,91 @@
 
 ## Current evidence index
 
-Issue #30 remains open. The initial default scan's Mac credential coverage gap
-is recorded below. The dedicated macOS workflow's hosted diagnostics now
-include the native credential module without the original platform-exclusion
-warning; see [verified hosted evidence](#verified-hosted-evidence--14-november-2026-utc).
-This establishes the specific platform correction, not complete semantic coverage
-or absence of vulnerabilities. Independent review found no workflow blocker.
-The owner-approved scanning rule is active; its controlled verification is
-[in progress](#approved-enforcement-execution--in-progress). Existing
-`mac-foundation` protection remains in force. The proposal below records the
-approved payload under child #40. This record is not security or release acceptance.
+The owner-approved rule **is active** and the core controlled tests are verified:
+missing, failed, successful-without-results and skipped Rust analysis each blocked
+merging; a fully analyzed candidate was eligible. See
+[final observed results](#final-observed-results--16-november-2026-utc).
+Classic Foundation protection, restricted workflow defaults and manual merges are
+unchanged. No test candidate was merged. This is bounded merge-enforcement evidence,
+not security/release acceptance or proof of perfect static analysis.
+
+Issues #30/#40 remain open for final review and the explicitly retained neutral/
+external-fork evidence limits. Historical preparation and pending statements below
+are superseded only where the final results provide evidence.
+
+## Final observed results — 16 November 2026 UTC
+
+Approved scope: one active repository ruleset **27343255**, `Verified CodeQL`,
+main only, no exclusions or bypass actors. It requires each of the four existing
+analysis jobs from GitHub Actions app **15368**, strict up-to-date checks, plus
+native CodeQL results. Both alert thresholds are `none`: no new severity policy
+or automatic alert dismissal was introduced. The effective-rules API and final
+ruleset read-back match the approved payload (GitHub adds default
+`do_not_enforce_on_create: false`). Classic branch-protection JSON after testing
+is identical to the pre-change snapshot. Administrator enforcement, conversation
+resolution, strict `mac-foundation`, force-push/deletion restrictions and approval
+settings are preserved. Workflow defaults remain `read`, PR approval permission
+false, and `allow_auto_merge` false. Paginated code-scanning alerts return `[]`.
+The separate glib advisory is unchanged.
+
+Controlled [PR #48](https://github.com/moultonlavah/metten/pull/48) produced:
+
+| Case | Candidate head | Observed result after other checks passed |
+| --- | --- | --- |
+| Rust job absent | `0aa714e3da1a041cec1abde644336606a2af074b` | `BLOCKED`; no Rust job/result, three other scans and Foundation successful |
+| Rust analyzer failure after initialization | `a4ebf2a092b9ee2a0185872b1aa922e1a7e6ad51` | `BLOCKED`; analyzer exit 2, three other scans and Foundation successful |
+| Rust job succeeds without results | `662080e0ea13e56447c04354ed7e30a13111d2fa` | `BLOCKED`; all job checks successful, current Rust result absent |
+| Rust job skipped | `82b8b6eb5c8bbf1ddc2636010c6c4ee20f8401bf` | `BLOCKED`; Rust `SKIPPED`, other scans and Foundation successful |
+| Complete normal analysis | `602a6f244ccc24b746cca54720b4ec73b52bf8a2` | **`CLEAN` / `MERGEABLE`**; all analyses and Foundation successful |
+
+Each candidate's detailed test-merge source, analysis IDs and failure evidence are
+recorded below. The earlier behind-main failure candidate `d77432f` is excluded.
+The final positive source tree exactly matches main
+`890af2eaff4fa525163bc00339ce081dbeeee4bf` (tree
+`305d05b3bd69672243d3ff9acf9acca8ab23851f`), restoring every test alteration.
+Its test-merge source is `165858fdddcc99ed56616e5a266fe7ed9f463acf`.
+
+Final positive hosted runs:
+[CodeQL 43797453031](https://github.com/moultonlavah/metten/actions/runs/43797453031),
+[PR Foundation 43797453071](https://github.com/moultonlavah/metten/actions/runs/43797453071),
+[push Foundation 43797447371](https://github.com/moultonlavah/metten/actions/runs/43797447371).
+Both complete Foundation runs passed, including interface/TypeScript checks, Python
+suites, web build, Rust format/workspace tests, release full-hour tests, clippy and
+packaged Mac build. Exact-merge CodeQL analyses, all zero results/empty errors:
+Rust **2173513137**, JavaScript/TypeScript **2173488298**, Actions **2173487937**,
+Python **2173487670**. Parsed final Rust diagnostic JSON explicitly matches all
+nine tracked Rust paths including `src-tauri/src/credential.rs`, with no emitted
+warning/error diagnostic or original semantic-analyzer/macro-expansion warning.
+It retains 68 note-level diagnostics. Apple Silicon beta, internal consistency
+notes and unscanned standalone Swift remain documented limitations.
+
+Current default-branch source `890af2e` also passed
+[CodeQL 43789153552](https://github.com/moultonlavah/metten/actions/runs/43789153552)
+and [Foundation 43789153555](https://github.com/moultonlavah/metten/actions/runs/43789153555).
+No scanner/application/workflow source was permanently changed. After recording
+`CLEAN` eligibility, closed #48 **without merging**, deleted only
+`test/issue-30-enforcement-20261115`, and stopped its watch. No merge API, bypass,
+real credentials, provider access, paid service or trading was used.
+
+### Retained evidence limits
+
+- CodeQL's aggregate check naturally concluded `NEUTRAL` for incomplete candidates
+  and did not allow them to merge. A neutral **Rust job** was not fabricated:
+  the existing workflow offers no configured path for one, and no alternate app
+  check or extra credential was used. The skipped and successful-without-results
+  cases are actual hosted evidence, not a claim of every possible check state.
+- Historical Dependabot [PR #34](https://github.com/moultonlavah/metten/pull/34),
+  head `244c11c438e8d2d27ee749b0bc4dba8ed3af6cd3`, has all four scanner jobs,
+  CodeQL aggregate and both Foundation jobs successful. This supports existing
+  workflow compatibility with Dependabot, not a new controlled merge-eligibility
+  test under ruleset 27343255. No external-fork PR exists in the repository's
+  returned PR inventory; no safe representative fork candidate was available.
+  External-fork upload/eligibility behavior remains unverified. Permissions were
+  not broadened. The approved plan explicitly keeps #40 incomplete when this
+  restricted-PR evidence is unavailable, so neither issue is closed here.
+- Hosted runs above cover the final restored test source, not the local evidence
+  documentation commits. Final document checks/review are recorded separately;
+  no application rerun is required solely for documentation under verification.md.
 
 ## Approved enforcement execution — in progress
 
@@ -125,11 +200,12 @@ without merge after evidence collection.
 
 ## Enforcement proposal — 15 November 2026 UTC
 
-Status: prepared for owner decision; **not applied or tested**. The remaining
+Historical proposal status before approval: prepared, not applied or tested.
+The final observed results above supersede this historical status. The remaining
 work is tracked by child [#40](https://github.com/moultonlavah/metten/issues/40).
 Its acceptance explicitly requires exact owner authority before protection or
-security-setting changes. The request to implement #30 starts preparation; no
-specific settings payload has yet been approved. Both issues remain open.
+security-setting changes. The owner subsequently approved this exact payload and bounded tests; both
+issues remain open for the retained evidence limits recorded above.
 
 Expected change path: GitHub owns merge eligibility; the existing CodeQL workflow
 owns analysis and uploads. Add one repository ruleset, retain the existing branch

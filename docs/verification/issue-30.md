@@ -8,9 +8,33 @@ include the native credential module without the original platform-exclusion
 warning; see [verified hosted evidence](#verified-hosted-evidence--14-november-2026-utc).
 This establishes the specific platform correction, not complete semantic coverage
 or absence of vulnerabilities. Independent review found no workflow blocker.
-Scanning remains nonblocking; the existing `mac-foundation` merge requirement
-remains in force. The [enforcement proposal](#enforcement-proposal--15-november-2026-utc)
-is ready for owner decision under child #40. This record is not security or release acceptance.
+The owner-approved scanning rule is active; its controlled verification is
+[in progress](#approved-enforcement-execution--in-progress). Existing
+`mac-foundation` protection remains in force. The proposal below records the
+approved payload under child #40. This record is not security or release acceptance.
+
+## Approved enforcement execution — in progress
+
+Owner explicitly approved applying/testing the prepared proposal in the active
+session. Created ruleset **27343255**, `Verified CodeQL`, active on main with no
+bypass/exclusions. Read-back confirms the exact four Actions-app-bound strict
+checks and native CodeQL rule with both alert thresholds `none`; GitHub supplies
+`do_not_enforce_on_create: false`. Effective-rules API confirms both rules apply.
+Classic protection matches the saved pre-change JSON exactly; workflow defaults
+remain read-only without PR approval authority, and auto-merge remains false.
+
+Disposable [PR #48](https://github.com/moultonlavah/metten/pull/48), branch
+`test/issue-30-enforcement-20261115`, must never merge. First candidate
+`0aa714e3da1a041cec1abde644336606a2af074b` removes only the Rust matrix entry.
+[CodeQL 43788487151](https://github.com/moultonlavah/metten/actions/runs/43788487151),
+[PR Foundation 43788487054](https://github.com/moultonlavah/metten/actions/runs/43788487054)
+and push Foundation 43788482711 are running. Initial PR state is conflict-free
+`MERGEABLE`, merge eligibility `BLOCKED`, with no Rust check and other checks still
+pending. This is **not yet isolated missing-analysis enforcement evidence**.
+No test merge or bypass was attempted. Exact baseline and created-rule response
+are retained outside source under `/tmp/metten-issue-30-approved-*` and
+`/tmp/metten-issue-30-created-ruleset.json`; candidate history is in
+`/tmp/metten-issue-30-candidates.json`. Rollback removes only ruleset 27343255.
 
 ## Enforcement proposal — 15 November 2026 UTC
 

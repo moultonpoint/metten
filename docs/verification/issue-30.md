@@ -10,8 +10,8 @@ Classic Foundation protection, restricted workflow defaults and manual merges ar
 unchanged. No test candidate was merged. This is bounded merge-enforcement evidence,
 not security/release acceptance or proof of perfect static analysis.
 
-Issues #30/#40 remain open for final review and the explicitly retained neutral/
-external-fork evidence limits. Historical preparation and pending statements below
+Issues #30/#40 remain open for the explicitly retained neutral/external-fork
+evidence limits; final review is complete with the corrections recorded below. Historical preparation and pending statements below
 are superseded only where the final results provide evidence.
 
 ## Final observed results — 16 November 2026 UTC
@@ -72,8 +72,12 @@ real credentials, provider access, paid service or trading was used.
 
 - CodeQL's aggregate check naturally concluded `NEUTRAL` for incomplete candidates
   and did not allow them to merge. A neutral **Rust job** was not fabricated:
-  the existing workflow offers no configured path for one, and no alternate app
-  check or extra credential was used. The skipped and successful-without-results
+  inspected `.github/workflows/codeql.yml` at `890af2e` (its single matrix job,
+  step conditions, run scripts and pinned CodeQL init/analyze calls). It configures
+  ordinary success/failure or skipped paths, with no script/input requesting a
+  neutral Rust-job conclusion. This is a source-inspection limit, not a claim
+  that GitHub can never emit neutral. No hosted neutral-Rust-job experiment,
+  alternate app check or extra credential was used. The skipped and successful-without-results
   cases are actual hosted evidence, not a claim of every possible check state.
 - Historical Dependabot [PR #34](https://github.com/moultonlavah/metten/pull/34),
   head `244c11c438e8d2d27ee749b0bc4dba8ed3af6cd3`, has all four scanner jobs,
@@ -85,8 +89,58 @@ real credentials, provider access, paid service or trading was used.
   not broadened. The approved plan explicitly keeps #40 incomplete when this
   restricted-PR evidence is unavailable, so neither issue is closed here.
 - Hosted runs above cover the final restored test source, not the local evidence
-  documentation commits. Final document checks/review are recorded separately;
+  documentation commits. Final document checks/review are recorded in the next section;
   no application rerun is required solely for documentation under verification.md.
+
+## Final review and document verification
+
+Reviewed source: `git diff a22a9a9188b683e07be141702e93295d83a4ade1...bfe4f0ff059dca75c0cd5b6ddf961afa95d7cf7a`.
+All four independent reviewers verified immutable root AGENTS.md and traversed
+applicable guidance at pinned `890af2eaff4fa525163bc00339ce081dbeeee4bf`. Each
+reported consulted/skipped guidance and no unavailable required source. The lead
+freshly resolved the same published commit at delivery. Unlike historical
+preparation reviews, these reviews include independent published-entry discovery.
+
+### Standards
+
+- **Sol / GPT-6.1 Sol:** one tracker-state correction: #40 still asked for approval
+  and said no settings had changed. Its current-state section and #30 now record
+  approval, active ruleset, actual test outcomes, closed/unmerged PR and remaining
+  acceptance. Historical proposal text is explicitly labeled historical. No
+  settings-safety defect found; live classic-protection digest matched baseline.
+- **GLM / GLM 5.3 Flash Free:** no hard standard violation. Independently confirmed
+  live ruleset scope/app binding, unmerged PR and exact source-tree restoration.
+  Mild repeated evidence formatting was an archival/readability judgement, with
+  no requested change; the current summary table remains the entry point.
+
+### Spec
+
+- **Sol / GPT-6.1 Sol:** no supported implementation defect or scope violation;
+  confirmed live final analyses, preserved settings and truthful partial acceptance.
+  The stale issue status was pending tracker reconciliation and is now corrected.
+- **DeepSeek / DeepSeek V4.1 Flash Free:** confirmed all five cases and final
+  coverage/settings. Three documentation findings corrected: CONTRIBUTING now
+  describes verified results rather than a proposed plan; the neutral-job limit
+  includes its workflow-inspection basis; this section records final checks/review.
+  No scope creep or false completion found. It independently checked missing-Rust
+  checks finished before main advanced, corroborating the recorded negative result.
+
+Summary: Standards — one supported tracker correction, resolved; Spec — three
+supported documentation corrections plus the same tracker reconciliation, resolved.
+No unresolved settings/implementation finding. Neutral-job and restricted-PR gaps
+remain acceptance limits, not passed tests. Lead checked the complete affected
+settings/analysis/eligibility flow; no second review round was needed for these
+bounded wording/traceability corrections.
+
+After those corrections, final local checks validate both documents' relative
+links/anchors, parse/assert the exact ruleset payload against live read-back,
+compare classic protection to its full pre-change JSON, confirm no app/workflow
+source changed on the selected branch, and run `git diff --check`. Final hosted
+Foundation and scanning evidence is reused for unchanged source, with the exact
+candidate/run identities above. No hosted CI is claimed for local documentation
+commits. There is no wired standalone actionlint or JavaScript lint gate;
+TypeScript, Rust format and clippy checks remain in Foundation. All tests use
+controlled source; no application or credential operation was introduced.
 
 ## Approved enforcement execution — in progress
 

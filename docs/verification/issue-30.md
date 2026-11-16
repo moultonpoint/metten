@@ -36,6 +36,28 @@ are retained outside source under `/tmp/metten-issue-30-approved-*` and
 `/tmp/metten-issue-30-created-ruleset.json`; candidate history is in
 `/tmp/metten-issue-30-candidates.json`. Rollback removes only ruleset 27343255.
 
+### Missing Rust result — passed negative case
+
+Candidate `0aa714e3da1a041cec1abde644336606a2af074b`, test-merge source
+`1ef272ff5491546336ae2239aa3e0c050b8de7fe`: both Foundation jobs and all three
+remaining language jobs completed successfully. CodeQL's aggregate check concluded
+`NEUTRAL`; the CodeQL workflow itself succeeded. Rust has neither a check nor a
+current analysis. Exact-merge analyses are JavaScript/TypeScript `2173178709`,
+Python `2173178387`, Actions `2173177645`, all with empty errors. The effective
+rules API still requires `Analyze (rust)` from app 15368 under ruleset 27343255.
+GitHub reports conflict-free `MERGEABLE` but merge eligibility **`BLOCKED`** after
+all reported checks completed. Thus the watcher notification “all 4 required
+checks passed” is not repository eligibility: absent Rust remains required.
+No merge API was called. This establishes the missing-Rust negative case;
+failed/incomplete and fully passing cases remain outstanding.
+
+Next candidate `d77432f70ce55dc1e5601bf954339eedabd37437` restores the Rust matrix
+entry and inserts only a Rust-specific step between initialization and analysis.
+It checks the expected database exists and the owned temporary destination does
+not, then moves that database. The analyzer must itself report failure; a path
+precondition failure would invalidate this experiment. No application, action
+pin, token permission or Foundation workflow is changed.
+
 ## Enforcement proposal — 15 November 2026 UTC
 
 Status: prepared for owner decision; **not applied or tested**. The remaining

@@ -1,5 +1,7 @@
 # Working on Metten
 
+Before substantive planning, implementation or review, follow [published-instruction discovery](docs/agents/verification.md#published-instruction-discovery), reading that procedure at the freshly resolved default-branch commit. This applies even when the selected worktree predates a published standard; preserve its approved task and unfinished work.
+
 Read the product specification before implementation and ADR 0001 before changing the engine or desktop integration. The product specification is `METTEN_DESIGN_DRAFT_2026-11-12.md`; it is the source of truth for behavior. GitHub issues are the implementation tracker; the implementation plan links the approved sequence.
 
 Implement one bounded issue at a time. Check its blockers and acceptance criteria before starting; `ready-for-agent` describes a prepared brief, not permission to bypass open blockers. Keep supported strategy changes in validated JSON. The shared Rust engine owns orders, limits, accounting and recovery; Tauri displays state and requests actions. Provider adapters must not branch on strategy names.

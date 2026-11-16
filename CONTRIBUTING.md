@@ -96,8 +96,9 @@ not full security acceptance. JavaScript/TypeScript, Actions and Python run on
 Linux. Swift's standalone
 verification harness is not scanned. The scanner does not execute that harness
 or access credentials. See [issue #30 evidence](docs/verification/issue-30.md)
-for coverage limitations and the acceptance still needed before making scanning
-a merge requirement.
+for coverage limitations and the proposed enforcement/test plan. Scanning remains
+nonblocking until the exact settings change is owner-approved and missing, failed
+and incomplete per-language analysis are proven to block merging under #40.
 
 The CodeQL `init` and `analyze` actions share one reviewed upstream release SHA.
 Update both together through the documented Dependabot/pin-maintenance route, with the

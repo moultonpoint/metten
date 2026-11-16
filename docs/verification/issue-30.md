@@ -9,7 +9,161 @@ warning; see [verified hosted evidence](#verified-hosted-evidence--14-november-2
 This establishes the specific platform correction, not complete semantic coverage
 or absence of vulnerabilities. Independent review found no workflow blocker.
 Scanning remains nonblocking; the existing `mac-foundation` merge requirement
-remains in force. This record is not security or release acceptance.
+remains in force. The [enforcement proposal](#enforcement-proposal--15-november-2026-utc)
+is ready for owner decision under child #40. This record is not security or release acceptance.
+
+## Enforcement proposal — 15 November 2026 UTC
+
+Status: prepared for owner decision; **not applied or tested**. The remaining
+work is tracked by child [#40](https://github.com/moultonlavah/metten/issues/40).
+Its acceptance explicitly requires exact owner authority before protection or
+security-setting changes. The request to implement #30 starts preparation; no
+specific settings payload has yet been approved. Both issues remain open.
+
+Expected change path: GitHub owns merge eligibility; the existing CodeQL workflow
+owns analysis and uploads. Add one repository ruleset, retain the existing branch
+protection, verify the GitHub PR/check/analysis boundary, and update this record
+and the contributor contract. No application code, new action, scanner framework,
+compiler, dependency or source exclusion is needed for this proposal. The code
+map's existing CI route stays valid.
+
+### Refreshed baseline
+
+Read-only inspection on 15 November found main at
+`a22a9a9188b683e07be141702e93295d83a4ade1`:
+
+- [Foundation 43743468399](https://github.com/moultonlavah/metten/actions/runs/43743468399)
+  and [CodeQL 43743468350](https://github.com/moultonlavah/metten/actions/runs/43743468350)
+  passed. All four language jobs passed separately. Analyses `2171758449` (Rust),
+  `2171740821` (JavaScript/TypeScript), `2171740016` (Actions) and `2171741043`
+  (Python) each report zero results and empty errors, with their respective
+  `/language:<language>` categories. CodeQL is 2.27.4.
+- Parsed the current main Rust job's emitted diagnostic JSON and compared its
+  explicit extraction paths with `git ls-files '*.rs'`: all nine paths match,
+  including the engine and native credential module. No emitted warning/error
+  diagnostic or original semantic-analyzer/macro-expansion warning occurs.
+  The report has 68 note-level diagnostics; internal consistency notes remain.
+  This preserves the bounded coverage conclusion above, not perfect analysis.
+- [Representative PR run 43742565783](https://github.com/moultonlavah/metten/actions/runs/43742565783)
+  passed all four language jobs on head
+  `e84a0e8d9f99d61475bd53ccf8d1913e6a02f8d8`; its
+  [Foundation run](https://github.com/moultonlavah/metten/actions/runs/43742565772)
+  also passed. The earlier reviewed PR/main extraction evidence remains applicable
+  to the unchanged scanner configuration. This is prior-source evidence, not CI
+  or merge eligibility for this documentation commit.
+- Standard queries, macOS Rust/build mode `none`, and Linux JavaScript/TypeScript,
+  Actions and Python remain configured without custom packs or exclusions.
+  Apple Silicon beta support and unscanned standalone Swift remain limitations.
+  The current checkout action emits a Node 20 deprecation warning; this is separate
+  from extraction diagnostics and does not justify an unrelated pin update here.
+- Paginated code-scanning alerts returned `[]`; no fix or dismissal is needed.
+  This does not resolve the separate glib dependency advisory tracked by #39.
+- Default setup is `not-configured`; advanced setup is active. Rulesets returned
+  `[]`. Classic main protection requires only `mac-foundation`, strict, bound to
+  GitHub Actions app `15368`; administrators are enforced. Stale approvals are
+  dismissed, conversation resolution is required, force pushes/deletion disabled.
+  Required approval count remains zero. Auto-merge is false; workflow defaults
+  are read-only and cannot approve PRs. Ordinary workflow permissions remain
+  `contents: read`.
+
+### Exact proposed settings
+
+Create **one** active branch ruleset named `Verified CodeQL`, targeting only
+`refs/heads/main`, with no exclusions or bypass actors. Leave classic protection
+and all other repository settings untouched. Proposed POST body for
+`repos/moultonlavah/metten/rulesets`:
+
+```json
+{
+  "name": "Verified CodeQL",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "required_status_checks": [
+          {"context": "Analyze (rust)", "integration_id": 15368},
+          {"context": "Analyze (javascript-typescript)", "integration_id": 15368},
+          {"context": "Analyze (actions)", "integration_id": 15368},
+          {"context": "Analyze (python)", "integration_id": 15368}
+        ]
+      }
+    },
+    {
+      "type": "code_scanning",
+      "parameters": {
+        "code_scanning_tools": [
+          {"tool": "CodeQL", "alerts_threshold": "errors", "security_alerts_threshold": "high_or_higher"}
+        ]
+      }
+    }
+  ]
+}
+```
+
+The individual job names and Actions app ID were observed on current main.
+They require each language independently rather than an aggregate workflow
+conclusion. The native CodeQL rule additionally proposes blocking new error-level
+alerts and High/Critical security alerts. These thresholds are proposed owner
+choices, not existing policy. Lower-severity alerts still require triage.
+
+GitHub [documents the rules API](https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset)
+and [native scanning merge protection](https://docs.github.com/en/code-security/concepts/code-scanning/merge-protection).
+Native scanning rules have documented exceptions, and status checks can accept
+skipped/neutral jobs. Neither mechanism alone is assumed to prove complete
+per-language enforcement. The combined behavior needs the controlled tests below;
+no eligibility or missing/failed-analysis guarantee is claimed yet.
+
+### Controlled acceptance and rollback
+
+After approval, re-read main, alerts and all settings. Save the complete baseline
+responses outside source; stop if unrelated settings changed. Create the ruleset
+and save its returned numeric ID and read-back response. Confirm effective rules
+on main and unchanged classic protection, workflow permissions and manual merges.
+
+Use one explicitly identified disposable PR to main, with temporary changes only
+to its copy of the existing scanner workflow. Keep application sources, pins,
+permissions and Foundation checks unchanged; never merge it or call the merge API.
+Record head and test-merge SHA, run/job and analysis IDs, required-check conclusions,
+rule evaluations where exposed, and GitHub merge eligibility for each candidate:
+
+1. Missing analysis: remove the Rust matrix entry, let the other three languages
+   and Foundation succeed, then confirm missing `Analyze (rust)` and blocked
+   eligibility. A green aggregate result must not satisfy Rust.
+2. Failed analysis: restore Rust and insert a deliberate Rust-only failure before
+   initialization/upload. Let the other languages and Foundation succeed; confirm
+   Rust failure, no fresh successful Rust upload and blocked eligibility.
+3. Incomplete analysis: skip Rust initialization/upload while allowing its job to
+   succeed; separately skip the Rust job. Confirm that neither absent current Rust
+   analysis can pass the combined rules. Inspect exact-commit categories, not an
+   older head's results. If GitHub treats either as eligible, the proposal fails;
+   leave both issues open and prepare the smallest supported correction rather
+   than claiming a reliable gate.
+4. Restore the workflow byte-for-byte from main and obtain all four fresh analysis
+   categories and full Foundation success. Confirm up-to-date, conflict-free,
+   non-draft eligibility under the actual rules. A draft or unrelated failing
+   check cannot be evidence of scanner enforcement. Close the disposable PR and
+   delete only its test branch; retain immutable run/candidate links in this record.
+
+No deliberately failed/unscanned candidate reaches main. Do not inject a real
+vulnerability or use real credentials. If evaluation details cannot distinguish
+scanner blocking from an unrelated blocker, record the evidence gap and stop.
+A successful scan does not prove vulnerability absence or native coverage beyond
+the inspected diagnostics.
+
+If the API rejects the payload, make no substitute settings change without
+reviewing it. If tests fail, delete only the newly created ruleset by its saved
+ID, then verify rulesets return to the captured baseline and classic protection
+is byte-for-byte equivalent after normalizing API ordering. Do not overwrite
+concurrent settings or disable existing protection. Rollback authority is limited
+to removing this session's new ruleset. Report the concrete failure and smallest
+supported next proposal. Completion requires successful observed negative and
+positive cases, final settings read-back, independent review, and owner acceptance
+of #40 and the remaining parent criteria.
 
 ## Verified hosted evidence — 14 November 2026 UTC
 

@@ -87,6 +87,25 @@ without uploading Rust results. This directly challenges whether successful job
 checks plus the native CodeQL rule enforce complete current language coverage.
 The remaining skipped/passing cases have not yet run. No merge has been attempted.
 
+### Successful Rust job without analysis — passed negative case
+
+Candidate `662080e0ea13e56447c04354ed7e30a13111d2fa`, test-merge source
+`4ff07fbea737c27665a9a285b77772f4d54576a0`: **all four analysis job checks and both
+Foundation jobs passed**, while no Rust analysis exists on that exact merge source.
+Current successful analyses: JavaScript/TypeScript `2173421604`, Python
+`2173420497`, Actions `2173420105`; CodeQL's aggregate check is `NEUTRAL`.
+The PR remains conflict-free `MERGEABLE`, current with main `890af2e`, and merge
+eligibility **`BLOCKED`**. This demonstrates that a green Rust job without results
+cannot satisfy the combined rule. The native CodeQL rule is necessary alongside
+individual job checks for this demonstrated incomplete-upload case.
+
+Next candidate `82b8b6eb5c8bbf1ddc2636010c6c4ee20f8401bf` removes Rust from the normal
+matrix and supplies a job with the same `Analyze (rust)` name and a false job
+condition; the other three matrix analyses run normally. This tests a genuinely
+skipped Rust job without suppressing unrelated language coverage. No new actions,
+permissions or application changes are introduced. The positive case is still
+pending, so no complete merge-enforcement acceptance is claimed.
+
 ## Enforcement proposal — 15 November 2026 UTC
 
 Status: prepared for owner decision; **not applied or tested**. The remaining

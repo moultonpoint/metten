@@ -66,6 +66,27 @@ not, then moves that database. The analyzer must itself report failure; a path
 precondition failure would invalidate this experiment. No application, action
 pin, token permission or Foundation workflow is changed.
 
+### Failed analyzer result — passed negative case
+
+Candidate `a4ebf2a092b9ee2a0185872b1aa922e1a7e6ad51`, test-merge source
+`4193ca228d7d276dbd5e43a1f31b84dbdcf5f220`, includes published main `890af2e`.
+[Rust job 133043910015](https://github.com/moultonlavah/metten/actions/runs/43789317512/job/133043910015)
+completed initialization and the database-move step, then CodeQL's analyzer
+actually ran and failed with exit 2: the Rust database root does not exist.
+The other three language scans and both Foundation jobs subsequently succeeded.
+GitHub reports conflict-free `MERGEABLE` and merge eligibility **`BLOCKED`**.
+This establishes analyzer-failure enforcement without an unrelated failed check.
+There is no fresh Rust API analysis; this is a tool execution failure, not an
+uploaded analysis with a nonempty API error. Exact-merge successful analyses:
+JavaScript/TypeScript `2173204674`, Python `2173204306`, Actions `2173203845`.
+
+Next candidate `662080e0ea13e56447c04354ed7e30a13111d2fa` restores the database-move
+change and skips only Rust initialization, analysis/upload and diagnostic reporting.
+The Rust job still runs its ordinary checkout/toolchain steps and should succeed
+without uploading Rust results. This directly challenges whether successful job
+checks plus the native CodeQL rule enforce complete current language coverage.
+The remaining skipped/passing cases have not yet run. No merge has been attempted.
+
 ## Enforcement proposal — 15 November 2026 UTC
 
 Status: prepared for owner decision; **not applied or tested**. The remaining

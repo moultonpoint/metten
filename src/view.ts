@@ -1,4 +1,6 @@
-export function presentation(snapshot) {
+import type { Snapshot } from './contract';
+
+export function presentation(snapshot: Snapshot) {
   const failed = snapshot.recording_error !== null;
   const busy = snapshot.pending > 0;
   return {
@@ -10,8 +12,8 @@ export function presentation(snapshot) {
   };
 }
 
-export function strategyFailure(failure, saving = false) {
-  const code = failure && typeof failure === 'object' ? failure.code : '';
+export function strategyFailure(failure: unknown, saving = false) {
+  const code = failure && typeof failure === 'object' && 'code' in failure ? failure.code : '';
   if (code === 'busy') return 'Strategy action already in progress. Wait and retry.';
   if (code === 'not_reviewed') return 'Preview the current text before saving.';
   if (code === 'quitting') return 'Quitting — wait for the stopped state to be saved.';

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { setImmediate } from 'node:timers/promises';
-import { presentation, strategyFailure } from '../src/view.mjs';
+import { presentation, strategyFailure } from '../src/view.ts';
 
 test('failed refresh does not assert stopped and still lets the user attempt Pause', async () => {
   const elements = new Map();

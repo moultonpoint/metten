@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { setImmediate } from 'node:timers/promises';
-import { presentation, strategyFailure } from '../src/view.mjs';
+import { presentation, strategyFailure } from '../src/view.ts';
 
 async function harness() {
   const elements = new Map();

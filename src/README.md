@@ -12,13 +12,13 @@ This contract covers the session, isolated dummy credentials and completed local
 | --- | --- |
 | [contract.ts](./contract.ts): `Action`, `Record`, `Snapshot` | Actions are `start`, `pause`, and `advance`. Records contain ID, stopped/running/paused status, test tick, reason, and recorded timestamp. Snapshots carry running/pending state, a nullable recording error, history, and actual SQLite writer settings. |
 | [main.ts](./main.ts): `element`, `render`, `refresh`, `control`, `poll` | Private entry-point functions bind required HTML IDs, render snapshots, invoke native `snapshot`/`control`, and refresh the display. Loading this module registers handlers and begins polling. |
-| [view.mjs](./view.mjs): `presentation(snapshot)` | Exported pure function returns status/recording messages and the three control-disabled flags. [view.d.mts](./view.d.mts) declares that result for TypeScript callers. |
+| [view.ts](./view.ts): `presentation(snapshot)` | Exported pure function returns status/recording messages and the three control-disabled flags. TypeScript checks the implementation and infers its result for callers. |
 | [main.ts](./main.ts): credential operation handlers | Invoke native `credential` with `save`, `replace`, `remove`, or `check`; include `value` only for save/replace. Display native status or a filtered failure message. |
 | [index.html](../index.html): session, credential, history, and details sections | Supplies required IDs, labelled sections, buttons, password input, status regions, error alert, and expandable writer details. The page identifies dummy verification and no exchange connection. |
 | [style.css](./style.css): `.controls`, `button:disabled`, `:focus-visible`, `#error` | Wraps controls, distinguishes disabled buttons, outlines focused buttons/summary, and preserves multiline errors. [vite-env.d.ts](./vite-env.d.ts) references Vite client declarations. |
 | `contract.ts`: strategy request/response, detail, error and requirements types | Mirrors the native tagged protocol; version IDs/cursors stay strings. |
 | `main.ts`: strategy handlers, `strategyControls`, `changedText`, `loadStrategies`, `inspectStrategy` | Read a user-selected bounded file or editor text, request preview/save/list/detail, inspect saved versions and edit a copy. No frontend rule evaluator or workspace path request. |
-| `view.mjs`: `strategyFailure`; `view.d.mts` | Finite presentation of strategy failures, including uncertain save guidance; declarations match the helper. |
+| `view.ts`: `strategyFailure` | Finite presentation of strategy failures, including uncertain save guidance; untrusted failures are narrowed from `unknown`. |
 | `index.html`, `style.css`: strategy controls/status/preview/detail | Labelled file/editor controls and literal, wrapped explanation/detail text, with focus treatment. |
 
 ## Invariants

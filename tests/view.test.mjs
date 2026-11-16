@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { presentation } from '../src/view.mjs';
+import { presentation } from '../src/view.ts';
 
 test('pending and failed recording never claim saved success or permit another event', () => {
   const saved = { running: true, pending: 0, recording_error: null, history: [{ status: 'running' }] };

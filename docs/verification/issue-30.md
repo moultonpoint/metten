@@ -66,6 +66,15 @@ Read-only inspection on 15 November found main at
   are read-only and cannot approve PRs. Ordinary workflow permissions remain
   `contents: read`.
 
+For exact baseline comparison, the full branch-protection GET response has
+SHA-256 `dcf671bcf2abb12a1b8699891f7dc768f9b2c3bd5769e607e4a146b61a07612e`
+after parsing JSON and serializing with sorted keys, separators `(',', ':')`,
+UTF-8 and no trailing newline. The full response is saved outside source at
+`/tmp/metten-issue-30-protection-before.json`; it contains settings only. The
+ruleset baseline is exactly `[]`. Capture fresh baseline responses before any
+approved mutation; a changed digest requires inspecting the difference first.
+Rollback deletes only the added ruleset, so it never rewrites classic protection.
+
 ### Exact proposed settings
 
 Create **one** active branch ruleset named `Verified CodeQL`, targeting only
@@ -97,7 +106,7 @@ and all other repository settings untouched. Proposed POST body for
       "type": "code_scanning",
       "parameters": {
         "code_scanning_tools": [
-          {"tool": "CodeQL", "alerts_threshold": "errors", "security_alerts_threshold": "high_or_higher"}
+          {"tool": "CodeQL", "alerts_threshold": "none", "security_alerts_threshold": "none"}
         ]
       }
     }
@@ -107,9 +116,11 @@ and all other repository settings untouched. Proposed POST body for
 
 The individual job names and Actions app ID were observed on current main.
 They require each language independently rather than an aggregate workflow
-conclusion. The native CodeQL rule additionally proposes blocking new error-level
-alerts and High/Critical security alerts. These thresholds are proposed owner
-choices, not existing policy. Lower-severity alerts still require triage.
+conclusion. The native CodeQL rule requires tool results without introducing a
+new alert-severity policy: both alert thresholds are `none`. All alerts still
+require triage under #30; any later severity-based merge policy is a separate
+owner decision. This proposal does not claim to block newly discovered findings
+by severity.
 
 GitHub [documents the rules API](https://docs.github.com/en/rest/repos/rules#create-a-repository-ruleset)
 and [native scanning merge protection](https://docs.github.com/en/code-security/concepts/code-scanning/merge-protection).
@@ -134,16 +145,37 @@ rule evaluations where exposed, and GitHub merge eligibility for each candidate:
 1. Missing analysis: remove the Rust matrix entry, let the other three languages
    and Foundation succeed, then confirm missing `Analyze (rust)` and blocked
    eligibility. A green aggregate result must not satisfy Rust.
-2. Failed analysis: restore Rust and insert a deliberate Rust-only failure before
-   initialization/upload. Let the other languages and Foundation succeed; confirm
-   Rust failure, no fresh successful Rust upload and blocked eligibility.
-3. Incomplete analysis: skip Rust initialization/upload while allowing its job to
-   succeed; separately skip the Rust job. Confirm that neither absent current Rust
+2. Failed analysis: restore Rust and let initialization complete successfully.
+   In a Rust-only step, move the initialized database from the run-log-confirmed
+   `$RUNNER_TEMP/codeql_databases/rust` to an unused path in that same owned runner
+   temporary directory. Confirm the source exists and destination is absent before
+   moving; fail the experiment if the observed database path has changed. Confirm the
+   analyzer actually runs and fails because no database exists, with the other
+   languages and Foundation passing and merge eligibility blocked. Record the
+   action failure and any uploaded failure diagnostic/API analysis error separately;
+   an absent API analysis is not an uploaded errored analysis. Do not substitute a
+   shell failure before initialization for this analyzer-boundary experiment.
+3. Incomplete analysis: skip Rust initialization/upload **and its diagnostic-report
+   step** while allowing its job to succeed (the report otherwise fails on missing
+   SARIF); separately skip the Rust job. Confirm that neither absent current Rust
    analysis can pass the combined rules. Inspect exact-commit categories, not an
    older head's results. If GitHub treats either as eligible, the proposal fails;
    leave both issues open and prepare the smallest supported correction rather
    than claiming a reliable gate.
-4. Restore the workflow byte-for-byte from main and obtain all four fresh analysis
+4. Neutral conclusion: GitHub also accepts neutral required-check conclusions.
+   Check whether the existing Actions/analyzer path can produce one without forging
+   an Actions check or using additional credentials. If supported, require blocked
+   eligibility without fresh Rust analysis. If not, record this as untested; do not
+   claim neutral-case enforcement or treat another app's neutral check as equivalent.
+5. Restricted PRs: inspect a Dependabot and external-fork PR, when safely available,
+   for upload permissions, all four current categories and blocked/eligible states.
+   Do not broaden token permissions, use `pull_request_target`, enable access to
+   fork secrets or execute untrusted code with a privileged token. GitHub documents
+   [special CodeQL handling for Dependabot PRs](https://docs.github.com/en/code-security/how-tos/find-and-fix-code-vulnerabilities/troubleshoot-code-scanning/resource-not-accessible).
+   Verify actual behavior; where a safe representative candidate is unavailable,
+   record the test as missing and leave #40 incomplete rather than promise merges
+   will remain available to that contributor class.
+6. Restore the workflow byte-for-byte from main and obtain all four fresh analysis
    categories and full Foundation success. Confirm up-to-date, conflict-free,
    non-draft eligibility under the actual rules. A draft or unrelated failing
    check cannot be evidence of scanner enforcement. Close the disposable PR and
@@ -164,6 +196,28 @@ to removing this session's new ruleset. Report the concrete failure and smallest
 supported next proposal. Completion requires successful observed negative and
 positive cases, final settings read-back, independent review, and owner acceptance
 of #40 and the remaining parent criteria.
+
+### Preparation review and checks
+
+Independent Standards/security review (Codex / GPT-6.1 Sol) found one test-plan
+issue: missing SARIF would make the diagnostic step fail the intended successful
+but incomplete job. The plan now skips that step for that controlled candidate.
+Independent Spec review (OpenCode Free Trial / DeepSeek V4.1 Flash Free) verified
+the baseline and payload and identified six partials. Corrections above cover the
+analyzer failure boundary, diagnostic step, neutral-case evidence limit, exact
+rollback baseline hash, removal of the new severity policy, and restricted-PR
+verification. The lead checked the complete missing/failed/incomplete-analysis
+flow; these are proposal corrections, not completed hosted acceptance tests.
+No additional review round was needed for these bounded documentation fixes.
+
+Local preparation checks validate JSON parsing, exact four check names and Actions
+app ID against observed main checks, local document links, whitespace, and unchanged
+GitHub protections/rulesets. No application, workflow or dependency source changed;
+existing Foundation/coverage evidence is reused only for those unchanged sources.
+No hosted CI is claimed for this local documentation commit. There is no wired
+standalone actionlint or JavaScript lint gate; TypeScript checking remains in
+Foundation. Applying settings and all controlled cases above remain pending.
+
 
 ## Verified hosted evidence — 14 November 2026 UTC
 

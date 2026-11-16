@@ -106,6 +106,23 @@ skipped Rust job without suppressing unrelated language coverage. No new actions
 permissions or application changes are introduced. The positive case is still
 pending, so no complete merge-enforcement acceptance is claimed.
 
+### Skipped Rust job — passed negative case
+
+Candidate `82b8b6eb5c8bbf1ddc2636010c6c4ee20f8401bf`, test-merge source
+`ba6421700a9529d497ef99448dbebc8874a859b3`: Rust job concludes `SKIPPED`, all other
+language jobs and both Foundation jobs pass, and current Rust analysis is absent.
+Current successful analyses: Python `2173450618`, JavaScript/TypeScript
+`2173450445`, Actions `2173449449`. CodeQL aggregate remains `NEUTRAL`. GitHub
+reports conflict-free `MERGEABLE` and merge eligibility **`BLOCKED`**. Thus a
+skipped job cannot substitute for actual Rust analysis under the combined rule.
+
+The final positive candidate is `602a6f244ccc24b746cca54720b4ec73b52bf8a2`.
+GitHub Git-tree comparison confirms its complete source tree equals current main
+`890af2eaff4fa525163bc00339ce081dbeeee4bf`, restoring all experimental workflow
+changes. Fresh full Foundation and all-language analysis must pass before checking
+eligibility. No final positive outcome is claimed yet. The test PR must close
+without merge after evidence collection.
+
 ## Enforcement proposal — 15 November 2026 UTC
 
 Status: prepared for owner decision; **not applied or tested**. The remaining

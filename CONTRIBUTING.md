@@ -4,7 +4,7 @@ Metten is in early development. The current foundation is non-trading; paper and
 
 ## Find work
 
-Check [open issues](https://github.com/moultonlavah/metten/issues) and their blockers before starting. Discuss substantial changes in an issue first. The [implementation plan](docs/implementation-plan.md) describes the planned sequence, and [ADR 0001](docs/adr/0001-rust-engine-and-tauri-boundaries.md) explains the engine and desktop boundary.
+Check [open issues](https://github.com/moultonpoint/metten/issues) and their blockers before starting. Discuss substantial changes in an issue first. The [implementation plan](docs/implementation-plan.md) describes the planned sequence, and [ADR 0001](docs/adr/0001-rust-engine-and-tauri-boundaries.md) explains the engine and desktop boundary.
 
 ## Set up and check changes
 
@@ -66,7 +66,7 @@ weekly update proposals for the repository’s GitHub Actions. This
 configuration takes effect on the default branch. Proposals require source review and
 passing Foundation checks before merge; they are never automatic approval.
 
-Connor Moulton (@moultonlavah) owns a manual review on the first of each month
+Connor Moulton (@moultonpoint) owns a manual review on the first of each month
 for `dtolnay/rust-toolchain`'s `master`-derived pin, and checks that the other two
 pins have received proposals or manually reviews them if automation is silent.
 Dependabot branch-derived SHA updates are not relied on: its current updater

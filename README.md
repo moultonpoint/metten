@@ -10,7 +10,7 @@ Metten is an open-source Mac app in development for running supported Kalshi str
 > [!NOTE]
 > **Early development:** Metten currently runs a non-trading test session and saves its history. Local JSON strategy preview and immutable versions are available. Paper trading, live trading, and a public release are not yet available.
 
-[Write a strategy](docs/strategies/authoring.md) · [Agent authoring](docs/strategies/agent-authoring.md) · [Get started](#run-the-non-trading-foundation) · [Contributing](CONTRIBUTING.md) · [Product specification](METTEN_DESIGN_DRAFT_2026-11-12.md) · [Issues](https://github.com/moultonlavah/metten/issues)
+[Write a strategy](docs/strategies/authoring.md) · [Agent authoring](docs/strategies/agent-authoring.md) · [Get started](#run-the-non-trading-foundation) · [Contributing](CONTRIBUTING.md) · [Product specification](METTEN_DESIGN_DRAFT_2026-11-12.md) · [Issues](https://github.com/moultonpoint/metten/issues)
 
 ## What we're building
 
@@ -20,7 +20,7 @@ Metten is intended to keep credentials in local-only Mac Keychain and nonsecret 
 
 ## Explore and contribute
 
-Browse the [implementation plan](docs/implementation-plan.md) and [open issues](https://github.com/moultonlavah/metten/issues) to see what's planned and what is ready. The [project vocabulary](GLOSSARY.md) explains the terms used throughout the documentation.
+Browse the [implementation plan](docs/implementation-plan.md) and [open issues](https://github.com/moultonpoint/metten/issues) to see what's planned and what is ready. The [project vocabulary](GLOSSARY.md) explains the terms used throughout the documentation.
 
 See the [contribution guide](CONTRIBUTING.md) for setup, checks, and contribution boundaries. To report a vulnerability privately, use the [security policy](SECURITY.md).
 

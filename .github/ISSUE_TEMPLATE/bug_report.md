@@ -21,4 +21,4 @@ Safe reproduction steps, version/commit, observed result and relevant public-saf
 
 Blockers/parent links (or none), next action, and any owner decision or sensitive access needed. Reporting does not authorize live actions.
 
-For undisclosed vulnerabilities, use [private reporting](https://github.com/moultonlavah/metten/security/advisories/new) under SECURITY.md. Do not include credentials, account data or confidential exploit details. Triage sets canonical category, type and priority separately.
+For undisclosed vulnerabilities, use [private reporting](https://github.com/moultonpoint/metten/security/advisories/new) under SECURITY.md. Do not include credentials, account data or confidential exploit details. Triage sets canonical category, type and priority separately.

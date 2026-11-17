@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Repository: `moultonlavah/metten`. Issue bodies own acceptance; the [product specification](../../METTEN_DESIGN_DRAFT_2026-11-12.md) and accepted [ADRs](../adr/) own behavior. The [implementation plan](../implementation-plan.md) links the product sequence. Projects display these same issues, never a separate task ledger. Requests belong in issues, not PRs; when a skill asks to publish a ticket, create an issue.
+Repository: `moultonpoint/metten`. Issue bodies own acceptance; the [product specification](../../METTEN_DESIGN_DRAFT_2026-11-12.md) and accepted [ADRs](../adr/) own behavior. The [implementation plan](../implementation-plan.md) links the product sequence. Projects display these same issues, never a separate task ledger. Requests belong in issues, not PRs; when a skill asks to publish a ticket, create an issue.
 
 ## Work recipe
 
@@ -58,9 +58,9 @@ The Project uses only these views; reuse its existing fields for future updates:
 
 | View | Filter |
 | --- | --- |
-| [Queue (mandatory)](https://github.com/users/moultonlavah/projects/1/views/1) | `repo:moultonlavah/metten is:issue is:open` |
-| [Product](https://github.com/users/moultonlavah/projects/1/views/2) | Queue filter plus `label:product` |
-| [Security](https://github.com/users/moultonlavah/projects/1/views/3) | Queue filter plus `label:security` |
+| [Queue (mandatory)](https://github.com/users/moultonpoint/projects/1/views/1) | `repo:moultonpoint/metten is:issue is:open` |
+| [Product](https://github.com/users/moultonpoint/projects/1/views/2) | Queue filter plus `label:product` |
+| [Security](https://github.com/users/moultonpoint/projects/1/views/3) | Queue filter plus `label:security` |
 
 Views show labels (category, triage, priority), Status (the stages above) and assignee; Queue also shows parent issue. Queue and Security use saved flat display defaults so children remain visible independently of parents. Native blocked icons are shown beside affected issues; follow issue links for exact dependency details. Verify every current open issue is in Queue; check native blocker indicators and direct dependency/body links. Report missing indicators honestly. Filters across different fields combine with AND; do not promise cross-field OR or a blocked-only filter. Drop unsupported optional views/sorts, retain complete Queue.
 

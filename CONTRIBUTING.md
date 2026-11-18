@@ -133,3 +133,11 @@ same manual fallback owner above. Review action entry points and release changes
 then inspect each language's extraction diagnostics and run all Foundation checks
 on the final revision. A successful job or file count alone does not prove native
 coverage. Keep the pinned Rust compiler and ordinary workflow permissions intact.
+
+## Source integration checks
+
+Use the published maintainability standard from freshly resolved default-branch guidance even in this older worktree. `npm run lint` runs pinned Oxlint correctness rules and type-aware `typescript/no-floating-promises` with zero warnings. `lint:fix` adds safe fixes to the same configuration; inspect any edits. Actual maintained paths include src/view.ts and all tests JavaScript; browser and Node globals are separate. Lint does not replace TypeScript, behavior tests or rejection handling at explicit-void sites.
+
+Run `cargo test -p metten --locked` and the public engine source tests for changed native/source boundaries. Run `python3 tests/credential-runner.test.py` after shared bootstrap/runner changes. The isolated packaged commands and proof limits are in [scripts](scripts/README.md#isolated-sources-walkthrough-step-5). Calibration/qualification belongs to deferred issue16; no test grants provider/account/ordinary credential access or rights. Reuse unchanged release-hour arithmetic evidence only within its named version/assumptions; the complete Foundation job retains that gate.
+
+The capacity campaigns, collectors and diagnostics have been deleted by owner direction. No opt-in performance command remains. Complete the issue 5/6 prototype with ordinary product-behavior tests; issue16 owns any later measurements justified by the integrated application. Historical failures remain documented and establish no supported envelope. Never run all ignored tests together: remaining ignored engine/Keychain checks have their own explicit selection and authority requirements.

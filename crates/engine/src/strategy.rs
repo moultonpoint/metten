@@ -400,6 +400,70 @@ pub struct Requirements {
     pub per_market_bytes: usize,
     pub implicit_buyable_asks: Vec<String>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Kalshi,
+    Brti,
+    Coinbase,
+    Kraken,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceSide {
+    Fixed(Side),
+    Selected,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceRequirement {
+    pub input_id: String,
+    pub source: Source,
+    pub instrument: String,
+    pub field: String,
+    pub unit: RuleUnit,
+    pub side: Option<SourceSide>,
+    pub startup_ms: u64,
+    pub implicit: bool,
+}
+struct InputIdentity {
+    source: Source,
+    instrument: &'static str,
+    field: &'static str,
+    unit: RuleUnit,
+}
+const IMPLICIT_ASK_IDENTITY: InputIdentity = InputIdentity {
+    source: Source::Kalshi,
+    instrument: "current_contract",
+    field: "buyable_ask",
+    unit: RuleUnit::ContractCents,
+};
+struct ImplicitAsk {
+    id: &'static str,
+    side: Side,
+}
+const IMPLICIT_ASKS: [ImplicitAsk; 2] = [
+    ImplicitAsk {
+        id: "__buyable_ask_yes",
+        side: Side::Yes,
+    },
+    ImplicitAsk {
+        id: "__buyable_ask_no",
+        side: Side::No,
+    },
+];
+impl ImplicitAsk {
+    fn requirement(&self) -> SourceRequirement {
+        SourceRequirement {
+            input_id: self.id.into(),
+            source: IMPLICIT_ASK_IDENTITY.source,
+            instrument: IMPLICIT_ASK_IDENTITY.instrument.into(),
+            field: IMPLICIT_ASK_IDENTITY.field.into(),
+            unit: IMPLICIT_ASK_IDENTITY.unit,
+            side: Some(SourceSide::Fixed(self.side)),
+            startup_ms: 0,
+            implicit: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct NumericInfo {
     dependencies: u32,
@@ -430,6 +494,43 @@ impl ValidatedStrategy {
     }
     pub fn requirements(&self) -> &Requirements {
         &self.requirements
+    }
+    pub fn source_requirements(&self) -> Vec<SourceRequirement> {
+        self.document
+            .inputs
+            .iter()
+            .map(|i| SourceRequirement {
+                input_id: i.id.clone(),
+                source: match i.source.as_str() {
+                    "kalshi" => Source::Kalshi,
+                    "brti" => Source::Brti,
+                    "coinbase" => Source::Coinbase,
+                    "kraken" => Source::Kraken,
+                    _ => unreachable!("validated binding"),
+                },
+                instrument: i.instrument.clone(),
+                field: i.field.clone(),
+                unit: i.unit,
+                side: i.side.as_deref().map(|s| match s {
+                    "yes" => SourceSide::Fixed(Side::Yes),
+                    "no" => SourceSide::Fixed(Side::No),
+                    _ => SourceSide::Selected,
+                }),
+                startup_ms: self.requirements.startup_ms[&i.id],
+                implicit: false,
+            })
+            .chain(
+                IMPLICIT_ASKS
+                    .iter()
+                    .filter(|a| {
+                        self.requirements
+                            .implicit_buyable_asks
+                            .iter()
+                            .any(|id| id == a.id)
+                    })
+                    .map(ImplicitAsk::requirement),
+            )
+            .collect()
     }
     pub fn parse(text: &str) -> Result<Self, Vec<RuleError>> {
         Self::validate(text).map_err(|e| vec![e])
@@ -1398,7 +1499,12 @@ fn explain(d: &Document, r: &Requirements) -> String {
     }
     s.push_str(&format!("Shared underlying history: {} bytes; history replicated per concrete market: {} bytes; fixed non-history reserve: {} bytes.\n", r.shared_underlying_bytes, r.per_market_bytes, RESERVE));
     for input in &r.implicit_buyable_asks {
-        s.push_str(&format!("Required implicit binding {input}: kalshi current_contract buyable_ask, contract_cents, exact market/contract and matching side. Source access is unverified.\n"));
+        let a = IMPLICIT_ASKS
+            .iter()
+            .find(|a| a.id == input)
+            .unwrap()
+            .requirement();
+        s.push_str(&format!("Required implicit binding {input}: kalshi {} {}, contract_cents, exact market/contract and matching side. Source access is unverified.\n", a.instrument, a.field));
     }
     s.push_str(&format!(
         "Support profile {}: planned {} bytes.\n",
@@ -2224,7 +2330,8 @@ struct Pending {
     output_objective: Option<ObjectiveView>,
     discarding_output: bool,
     binding_lookup: usize,
-    member_bindings: BTreeSet<u32>,
+    member_bindings: std::collections::BTreeMap<u32, u8>,
+    applying_bindings: std::collections::BTreeMap<u32, u8>,
     entered_markets: u128,
     catalog_context: RunContext,
     catalog_raw: Vec<RawState>,
@@ -2251,6 +2358,9 @@ impl Pending {
         } else if !self.member_bindings.is_empty() {
             tree_work(self.member_bindings.len(), true);
             self.member_bindings.pop_first();
+        } else if !self.applying_bindings.is_empty() {
+            tree_work(self.applying_bindings.len(), true);
+            self.applying_bindings.pop_first();
         } else if self.allocation.candidate.take().is_some() {
         } else {
             return true;
@@ -2633,7 +2743,7 @@ impl Evaluator {
             tree_bytes::<(String, usize), Truth>(states),
             tree_bytes::<(String, usize), bool>(states),
             3 * path_bytes,
-            tree_bytes::<u32, ()>(128),
+            2 * tree_bytes::<u32, u8>(128),
         ]);
         let checkpoints = sum_bytes([
             tree_bytes::<String, CheckpointSnapshot>(checkpoint_count),
@@ -2724,7 +2834,8 @@ impl Evaluator {
             output_objective: None,
             discarding_output: false,
             binding_lookup: 0,
-            member_bindings: BTreeSet::new(),
+            member_bindings: Default::default(),
+            applying_bindings: Default::default(),
             entered_markets: self.entered_markets,
             catalog_context: self.context.clone(),
             catalog_raw: self.raw.clone(),
@@ -2925,9 +3036,16 @@ impl Evaluator {
                             }
                             budget -= 256;
                             tree_work(p.member_bindings.len(), true);
-                            if !p.member_bindings.insert(id) {
+                            let kind = member_kind(c);
+                            let members = p.member_bindings.entry(id).or_default();
+                            if *members & kind != 0
+                                || (*members | kind) & VALUE_MEMBERS == VALUE_MEMBERS
+                                || (*members != 0 && kind == GAP_MEMBER)
+                                || (*members & GAP_MEMBER != 0)
+                            {
                                 return Err(evidence("unregistered_binding"));
                             }
+                            *members |= kind;
                         }
                         if let EvidenceChange::Gap {
                             start_ms, end_ms, ..
@@ -3165,8 +3283,37 @@ impl Evaluator {
                             }
                         }
                         self.apply(change, t.number)?;
+                        if let Some(id) = change_binding(change) {
+                            tree_work(p.applying_bindings.len(), true);
+                            let mask = p.applying_bindings.entry(id).or_default();
+                            *mask |= member_kind(change);
+                            if matches!(change, EvidenceChange::Validity { valid_until_ms, reason, .. }
+                                if reason.is_some() || *valid_until_ms <= t.at_ms)
+                            {
+                                *mask |= INVALID_PAIRED_VALIDITY;
+                            }
+                        }
                     }
                     p.apply_member += 1;
+                    continue;
+                }
+                if !p.applying_bindings.is_empty() {
+                    if budget < 512 {
+                        return Ok(None);
+                    }
+                    budget -= 512;
+                    tree_work(p.applying_bindings.len(), true);
+                    let (id, mask) = p.applying_bindings.pop_first().unwrap();
+                    if mask & VALUE_MEMBERS != 0 && mask & INVALID_PAIRED_VALIDITY != 0 {
+                        let raw = self
+                            .raw
+                            .iter_mut()
+                            .inspect(inspect_entry)
+                            .find(|r| r.descriptor.binding_id == id)
+                            .ok_or_else(|| evidence("unregistered_binding"))?;
+                        raw.value = None;
+                        raw.bad_cell = true;
+                    }
                     continue;
                 }
                 if let Some(series) = p.reserved_series.get(p.transfer_cursor) {
@@ -4477,6 +4624,24 @@ fn scope_market(scope: &BindingScope) -> Option<&str> {
         }
     }
 }
+const OBSERVATION_MEMBER: u8 = 1;
+const RESYNCHRONIZE_MEMBER: u8 = 2;
+const VALIDITY_MEMBER: u8 = 4;
+const GAP_MEMBER: u8 = 8;
+const INVALID_PAIRED_VALIDITY: u8 = 16;
+const VALUE_MEMBERS: u8 = OBSERVATION_MEMBER | RESYNCHRONIZE_MEMBER;
+
+fn member_kind(change: &EvidenceChange) -> u8 {
+    fixed_work(1);
+    match change {
+        EvidenceChange::Observation { .. } => OBSERVATION_MEMBER,
+        EvidenceChange::Resynchronize { .. } => RESYNCHRONIZE_MEMBER,
+        EvidenceChange::Validity { .. } => VALIDITY_MEMBER,
+        EvidenceChange::Gap { .. } => GAP_MEMBER,
+        _ => 0,
+    }
+}
+
 fn change_binding(c: &EvidenceChange) -> Option<u32> {
     fixed_work(1);
     match c {
@@ -4523,6 +4688,57 @@ fn validate_binding_text(binding: &BindingDescriptor) -> Result<(), EvidenceErro
     }
     Ok(())
 }
+pub(crate) fn validate_market_descriptor(
+    d: &MarketDescriptor,
+    series: &str,
+) -> Result<(), EvidenceError> {
+    fixed_work(1);
+    let valid_id = |x: &str| {
+        !x.is_empty() && x.len() <= 128 && !x.chars().inspect(inspect_entry).any(char::is_control)
+    };
+    if !valid_id(&d.series_id)
+        || !valid_id(&d.market_id)
+        || !valid_id(&d.contract_id)
+        || d.series_id != series
+        || d.close_ms.checked_sub(d.open_ms) != Some(900000)
+    {
+        return Err(evidence("incompatible_market"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_binding_scope(
+    instrument: &str,
+    side: Option<&str>,
+    markets: &[MarketDescriptor],
+    b: &BindingDescriptor,
+) -> Result<(), EvidenceError> {
+    validate_binding_text(b)?;
+    match (&b.scope, instrument, side) {
+        (BindingScope::Underlying, "btc_usd", None) => (),
+        (BindingScope::Market { market_id }, "current_market", None)
+            if markets
+                .iter()
+                .inspect(inspect_entry)
+                .any(|m| m.market_id == *market_id) => {}
+        (
+            BindingScope::Contract {
+                market_id,
+                contract_id,
+                side: bound,
+            },
+            "current_contract",
+            Some(s),
+        ) if markets
+            .iter()
+            .inspect(inspect_entry)
+            .any(|m| m.market_id == *market_id && m.contract_id == *contract_id)
+            && (s == "selected_side" || s == if *bound == Side::Yes { "yes" } else { "no" }) => {}
+        _ => return Err(evidence("incompatible_market")),
+    }
+    Ok(())
+}
+
 fn add_binding_to(
     strategy: &ValidatedStrategy,
     context: &mut RunContext,
@@ -4549,44 +4765,18 @@ fn add_binding_to(
         REGISTRATION_PROBES.with(|n| n.set(n.get() + 1));
         i.id == b.input_id
     });
-    if let Some(i) = input {
-        match (&b.scope, i.instrument.as_str(), i.side.as_deref()) {
-            (BindingScope::Underlying, "btc_usd", None) => (),
-            (BindingScope::Market { market_id }, "current_market", None)
-                if context.markets.iter().any(|m| {
-                    #[cfg(test)]
-                    REGISTRATION_PROBES.with(|n| n.set(n.get() + 1));
-                    m.market_id == *market_id
-                }) => {}
-            (
-                BindingScope::Contract {
-                    market_id,
-                    contract_id,
-                    side,
-                },
-                "current_contract",
-                Some(s),
-            ) if context.markets.iter().any(|m| {
-                #[cfg(test)]
-                REGISTRATION_PROBES.with(|n| n.set(n.get() + 1));
-                m.market_id == *market_id && m.contract_id == *contract_id
-            }) && (s == "selected_side"
-                || s == if *side == Side::Yes { "yes" } else { "no" }) => {}
-            _ => return Err(evidence("incompatible_market")),
-        }
+    let implicit = IMPLICIT_ASKS.iter().find(|a| a.id == b.input_id);
+    let (instrument, side) = if let Some(i) = input {
+        (i.instrument.as_str(), i.side.as_deref())
+    } else if let Some(a) = implicit {
+        (
+            IMPLICIT_ASK_IDENTITY.instrument,
+            Some(if a.side == Side::Yes { "yes" } else { "no" }),
+        )
     } else {
-        let expected_side = match b.input_id.as_str() {
-            "__buyable_ask_yes" => Side::Yes,
-            "__buyable_ask_no" => Side::No,
-            _ => return Err(evidence("unregistered_binding")),
-        };
-        if !matches!(&b.scope, BindingScope::Contract { market_id, contract_id, side }
-            if *side == expected_side && context.markets.iter().inspect(inspect_entry).any(|m|
-                m.market_id == *market_id && m.contract_id == *contract_id))
-        {
-            return Err(evidence("incompatible_market"));
-        }
-    }
+        return Err(evidence("unregistered_binding"));
+    };
+    validate_binding_scope(instrument, side, &context.markets, &b)?;
     if raw.iter().any(|r| {
         #[cfg(test)]
         REGISTRATION_PROBES.with(|n| n.set(n.get() + 1));
@@ -4637,19 +4827,7 @@ impl RegistrationCursor {
     ) -> Result<bool, EvidenceError> {
         fixed_work(1);
         if !self.descriptor_done {
-            let valid_id = |x: &str| {
-                !x.is_empty()
-                    && x.len() <= 128
-                    && !x.chars().inspect(inspect_entry).any(char::is_control)
-            };
-            if !valid_id(&d.series_id)
-                || !valid_id(&d.market_id)
-                || !valid_id(&d.contract_id)
-                || d.series_id != context.series_id
-                || d.close_ms.checked_sub(d.open_ms) != Some(900000)
-            {
-                return Err(evidence("incompatible_market"));
-            }
+            validate_market_descriptor(d, &context.series_id)?;
             if let Some(old) = context.markets.iter().find(|m| {
                 #[cfg(test)]
                 REGISTRATION_PROBES.with(|n| n.set(n.get() + 1));
@@ -5144,6 +5322,122 @@ mod heap_probe {
 mod controlled_failure_tests {
     use super::*;
     #[test]
+    fn source_constructor_rejects_oversized_identity_before_allocating_a_copy() {
+        let text = r#"{"format":2,"name":"Constructor admission","inputs":[{"id":"price","source":"coinbase","instrument":"btc_usd","field":"last_trade","unit":"usd_per_btc"}],"purchase_options":[{"id":"buy","side":{"type":"fixed","side":"yes"},"when":{"type":"compare","left":{"reference":"price"},"comparison":"greater_than","right":{"value":"1","unit":"usd_per_btc"}}}]}"#;
+        let strategy = ValidatedStrategy::parse(text).unwrap();
+        let markets = vec![
+            MarketDescriptor {
+                series_id: "x".repeat(2 * 1024 * 1024),
+                market_id: "m".into(),
+                contract_id: "c".into(),
+                open_ms: 1,
+                close_ms: 900001
+            };
+            3
+        ];
+        for count in [1, 3] {
+            let peak = heap_probe::measure(|| {
+                assert!(
+                    crate::sources::SourceState::new(&strategy, &markets[..count], &[], &[])
+                        .is_err()
+                );
+            });
+            assert!(
+                peak < 128 * 1024,
+                "Rejected source registration copied unbounded input: {peak}"
+            );
+            eprintln!("source_rejected_constructor_count={count} peak={peak}");
+        }
+    }
+
+    #[test]
+    fn source_pair_masks_at_binding_cap_remain_within_slice_and_heap_admission() {
+        let inputs: Vec<_> = (0..32).map(|i| serde_json::json!({"id":format!("ask_{i}"),"source":"kalshi","instrument":"current_contract","field":"buyable_ask","unit":"contract_cents","side":"selected_side"})).collect();
+        let rule = serde_json::json!({"format":2,"name":"Pair maxima","inputs":inputs,"purchase_options":[{"id":"buy","side":{"type":"fixed","side":"yes"},"when":{"type":"compare","left":{"reference":"ask_0"},"comparison":"less_than","right":{"value":"40","unit":"contract_cents"}}}]});
+        let markets: Vec<_> = (0..2)
+            .map(|i| MarketDescriptor {
+                series_id: "btc15m".into(),
+                market_id: format!("m{i}"),
+                contract_id: format!("c{i}"),
+                open_ms: i * 900000 + 1,
+                close_ms: (i + 1) * 900000 + 1,
+            })
+            .collect();
+        let mut bindings = Vec::new();
+        for (market, m) in markets.iter().enumerate() {
+            for input in 0..32 {
+                for (n, side) in [Side::Yes, Side::No].into_iter().enumerate() {
+                    bindings.push(BindingDescriptor {
+                        binding_id: (market * 64 + input * 2 + n) as u32,
+                        input_id: format!("ask_{input}"),
+                        scope: BindingScope::Contract {
+                            market_id: m.market_id.clone(),
+                            contract_id: m.contract_id.clone(),
+                            side,
+                        },
+                    });
+                }
+            }
+        }
+        let mut changes = Vec::new();
+        for b in &bindings {
+            changes.push(EvidenceChange::Observation {
+                binding_id: b.binding_id,
+                observation_number: 1,
+                value: Decimal::parse("30").unwrap(),
+            });
+            changes.push(EvidenceChange::Validity {
+                binding_id: b.binding_id,
+                valid_until_ms: 0,
+                reason: Some("controlled invalid pair".into()),
+            });
+        }
+        let mut e = Evaluator::new(
+            ValidatedStrategy::parse(&rule.to_string()).unwrap(),
+            RunContext {
+                strategy_version: "v".into(),
+                run_id: "r".into(),
+                go_time: "controlled".into(),
+                series_id: "btc15m".into(),
+                markets,
+                bindings,
+            },
+        )
+        .unwrap();
+        e.begin(AdvanceBatch {
+            received_through_ms: 0,
+            target_ms: 0,
+            transactions: vec![NormalizedTransaction {
+                number: 1,
+                at_ms: 0,
+                changes,
+            }],
+            coverage: vec![],
+            current_admission: Admission::Allowed,
+        })
+        .unwrap();
+        let mut maximum = 0;
+        loop {
+            let before = processing_entries();
+            let result = e.process_slice(SliceControl::Continue, None);
+            maximum = maximum.max(processing_entries() - before);
+            match result {
+                SliceResult::Pending { .. } => (),
+                SliceResult::Complete(d) => {
+                    assert!(d.candidate.is_none());
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(e.raw.iter().all(|r| r.value.is_none() && r.number == 1));
+        assert!(maximum <= 4096, "{maximum}");
+        eprintln!(
+            "source_pair_maximum_slice_primitives={maximum}; member_maps_reservation={}",
+            2 * tree_bytes::<u32, u8>(128)
+        );
+    }
+    #[test]
     fn constructor_rejects_context_before_duplicating_over_budget_text() {
         let text = r#"{"format":2,"name":"Constructor ownership","inputs":[{"id":"usd","source":"coinbase","instrument":"btc_usd","field":"last_trade","unit":"usd_per_btc"}],"purchase_options":[{"id":"buy","side":{"type":"fixed","side":"yes"},"when":{"type":"compare","left":{"reference":"usd"},"comparison":"greater_than","right":{"value":"1","unit":"usd_per_btc"}}}]}"#;
         let mut nested: serde_json::Value = serde_json::from_str(text).unwrap();
@@ -5498,6 +5792,34 @@ mod controlled_failure_tests {
         assert!(auxiliary <= 4096);
         eprintln!(
             "scratch inventory Predicate={predicate}, numeric={numeric}, registration={registration}, selection={selection}, auxiliary simultaneous bound={auxiliary}"
+        );
+    }
+
+    #[test]
+    fn source_member_map_reservation_covers_two_simultaneous_masks() {
+        let peak = heap_probe::measure(|| {
+            let mut validation = std::collections::BTreeMap::<u32, u8>::new();
+            let mut application = std::collections::BTreeMap::<u32, u8>::new();
+            for n in 0..128 {
+                validation.insert(n, 5);
+                application.insert(n, 21);
+                assert!(
+                    heap_probe::live()
+                        <= tree_bytes::<u32, u8>(validation.len())
+                            + tree_bytes::<u32, u8>(application.len())
+                );
+            }
+            while validation.pop_first().is_some() || application.pop_first().is_some() {
+                assert!(
+                    heap_probe::live()
+                        <= tree_bytes::<u32, u8>(validation.len())
+                            + tree_bytes::<u32, u8>(application.len())
+                );
+            }
+        });
+        eprintln!(
+            "source_member_maps_measured_peak={peak}; reserved={}",
+            2 * tree_bytes::<u32, u8>(128)
         );
     }
 

@@ -5,6 +5,8 @@ fn main() {
             "control",
             "credential",
             "strategies",
+            "sources",
+            "provider_credential",
         ]),
     ))
     .expect("build manifest");

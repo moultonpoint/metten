@@ -8,7 +8,7 @@
 Metten is an open-source Mac app in development for running supported Kalshi strategies locally. It is designed around a shared engine that keeps strategy rules separate from purchasing, accounting, and recovery.
 
 > [!NOTE]
-> **Early development:** Metten currently runs a non-trading test session and saves its history. Local JSON strategy preview and immutable versions are available. Paper trading, live trading, and a public release are not yet available.
+> **Early development:** Metten currently offers a read-only Sources prototype, a non-trading test session with saved history, and local JSON strategy preview and immutable versions. Paper trading, live trading, and a public release are not yet available.
 
 [Write a strategy](docs/strategies/authoring.md) · [Agent authoring](docs/strategies/agent-authoring.md) · [Get started](#run-the-non-trading-foundation) · [Contributing](CONTRIBUTING.md) · [Product specification](METTEN_DESIGN_DRAFT_2026-11-12.md) · [Issues](https://github.com/moultonpoint/metten/issues)
 
@@ -43,7 +43,9 @@ npm ci
 npm run tauri dev
 ```
 
-Start the controlled session, advance its manual test clock, and pause. Now and History display committed SQLite records. Reopening retains history and starts stopped. This is a test session, not paper trading; it has no market feeds, orders or financial accounting. Credential storage has been tested with dummy credentials only; provider connections are not available.
+Sources exposes named read-only connections for Kalshi, BRTI, Coinbase and Kraken. Ordinary setup uses production market data. To connect Kalshi, enter its API key ID and PEM private key in Sources and save them to protected, local-only Mac Keychain, then press Connect for the source you want. Saving a key or reopening the app does not connect automatically. BRTI shares the Kalshi credential; authentication alone does not prove BRTI access. Received prices do not establish verified freshness, complete history or strategy usability; inspect each source's status and the [source profiles and limits](docs/sources/README.md).
+
+The separate controlled session still uses a manual test clock: start, advance and pause it. Now and History display committed SQLite records; reopening retains history and starts stopped. This session is not paper trading and has no orders or financial accounting.
 
 Build a local Mac application with `npm run tauri build -- --bundles app`; open `target/release/bundle/macos/Metten.app`. This local bundle is not a signed/notarized public release.
 
@@ -78,11 +80,11 @@ The [EGM coverage map](docs/egm/README.md) links code-grounded component contrac
 
 ### Invariants
 
-The screen does not own saved truth. Accepted requests are not confirmed writes; errors preserve last confirmed history. The current foundation has no trading operation. Credentials are dummy-only and unavailable on an ordinary launch. The [issue #4 evidence](docs/verification/issue-4.md#current-evidence-index) records bounded local strategy checks. The controlled rule evaluator is separate from session Start/Pause; connected sources, paper/live execution and release readiness remain later work.
+The screen does not own saved truth. Accepted requests are not confirmed writes; errors preserve last confirmed history. The current foundation has no trading operation. Ordinary source setup supports protected Kalshi credentials; isolated verification uses separate dummy credentials. The [issue #4 evidence](docs/verification/issue-4.md#current-evidence-index) records bounded local strategy checks. The controlled rule evaluator is separate from session Start/Pause; read-only source receipt does not enable paper/live execution or establish release readiness. The [issue #5 evidence](docs/verification/issue-5.md#current-evidence-index) records bounded Kalshi production receipt and controlled source checks; ordinary production Keychain/GUI operation and BRTI access remain unverified.
 
 ### Side Effects
 
-Application execution can create a local workspace, SQLite history and lock files. The isolated native verifier can create and remove owned disposable Keychains and workspaces. Build/install/check commands can download dependencies and create generated files, binaries and test resources. See the owning component contract before running them. `.gitignore` excludes private planning/research, credentials, runtime databases, dependency directories and build/schema output; no such records belong in drift reports.
+Application execution can create a local workspace, SQLite history and lock files. Explicit Sources actions can store or change provider credentials in Mac Keychain and connect directly to named providers for read-only market data. The isolated native verifier can create and remove owned disposable Keychains and workspaces. Build/install/check commands can download dependencies and create generated files, binaries and test resources. See the owning component contract before running them. `.gitignore` excludes private planning/research, credentials, runtime databases, dependency directories and build/schema output; no such records belong in drift reports.
 
 ### Verification
 

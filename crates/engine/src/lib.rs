@@ -1,4 +1,5 @@
 //! A controlled non-trading session. No desktop, network, or exchange dependency.
+pub mod sources;
 mod storage;
 pub mod strategy;
 pub use strategy::{

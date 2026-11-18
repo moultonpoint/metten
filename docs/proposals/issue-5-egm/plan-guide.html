@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Metten — the proposed plan, explained</title>
+<style>
+:root{color-scheme:light dark;--ink:var(--foreground,#e8e8e3);--soft:var(--muted-foreground,#a4a9b0);--paper:var(--card,#1c2027);--line:var(--border,#515b69);--blue:var(--primary,#a5baff);--good:var(--success,#80d4a4);--caution:var(--warning,#eed286);--r:var(--radius,8px)}
+*{box-sizing:border-box}html,body{background:transparent;margin:0;padding:0}body{font-family:var(--font-sans,Verdana,sans-serif);color:var(--ink);font-size:17px;line-height:1.55}main{min-width:0}h1,h2,h3,p,figure{margin:0}h1{font-family:Georgia,serif;font-size:2rem;font-weight:400;line-height:1.15;letter-spacing:-.02em;max-width:26ch}h2{font-size:1.35rem;line-height:1.25;margin-bottom:1rem}h3{font-size:1rem;line-height:1.4}p{max-width:65ch}small,.quiet{color:var(--soft)}small{font-size:.8rem}.intro{margin:.75rem 0 1.5rem}.eyebrow{display:flex;gap:.5rem;align-items:center;color:var(--soft);font-size:.8rem;margin:0 0 .75rem}.dot{display:inline-block;width:.6rem;height:.6rem;background:var(--blue);border-radius:50%}.section{margin-top:2rem;padding-top:1.5rem;border-top:1px solid var(--line)}.sources{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.source{padding:1rem;background:var(--paper);border:1px solid var(--line);border-radius:var(--r);min-width:0}.source p{font-size:.9rem;margin:.5rem 0}.source.main{border-color:var(--blue)}.tag{display:inline-block;font-size:.75rem;color:var(--soft);margin-bottom:.5rem}.feed-note{margin-top:.75rem;font-size:.85rem;color:var(--soft)}.flow{display:grid;grid-template-columns:1fr;gap:0;margin-top:1.5rem}.step{display:grid;grid-template-columns:2rem minmax(0,1fr);gap:.75rem;align-items:start;padding:1rem;background:var(--paper);border:1px solid var(--line);border-radius:var(--r)}.step-number{font-family:Georgia,serif;font-size:1.5rem;line-height:1.3;color:var(--soft)}.step p{font-size:.9rem;color:var(--soft);margin-top:.25rem}.step.last{border:2px solid var(--blue)}.arrow{padding:.25rem 0 .25rem 1.65rem;color:var(--soft);font-size:.8rem}.arrow span{padding-left:.5rem}figcaption{font-size:.8rem;color:var(--soft);margin-top:.75rem}.later{margin-top:1rem;padding:.75rem 1rem;border:1px dashed var(--line);border-radius:var(--r);font-size:.85rem;color:var(--soft)}.later strong{color:var(--ink)}.controls{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0}button{font:inherit;font-size:.85rem;line-height:1.35;min-height:44px;padding:.5rem .75rem;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:4px}button[aria-pressed="true"]{border:2px solid var(--blue);padding:calc(.5rem - 1px) calc(.75rem - 1px)}button:focus-visible,summary:focus-visible{outline:3px solid var(--blue);outline-offset:3px}.example{font-size:.85rem;color:var(--soft)}.status-board{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.status{padding:1rem 0;border-bottom:1px solid var(--line);min-width:0}.state{display:flex;gap:.5rem;align-items:baseline;margin-top:.35rem;font-weight:600}.state.ok{color:var(--good)}.state.wait{color:var(--caution)}.explanation{margin-top:1rem;padding:1rem;background:var(--paper);border-radius:var(--r)}.explanation p{font-size:.9rem;margin-top:.5rem}.checks{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.check{padding-left:1rem;border-left:2px solid var(--line)}.check p{color:var(--soft);font-size:.9rem;margin-top:.25rem}.proof{display:grid;grid-template-columns:1fr;gap:.75rem}.proof-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);gap:1rem;padding:.75rem 0;border-bottom:1px solid var(--line);font-size:.9rem}.proof-row p{color:var(--soft)}details{margin-top:1rem}summary{font-weight:600;font-size:.9rem;min-height:44px;padding:.5rem 0}details p{font-size:.9rem;color:var(--soft);margin-top:.5rem}.scope{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.scope>div{padding:1rem;background:var(--paper);border-radius:var(--r)}.scope ul{font-size:.9rem;padding-left:1.1rem;margin:.5rem 0 0}.scope li{margin-top:.5rem}.ending{font-size:.8rem;color:var(--soft);margin:1.5rem 0 .5rem}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+@media(min-width:620px){.flow{grid-template-columns:minmax(0,1fr) 1.5rem minmax(0,1fr)}.flow .step{grid-template-columns:1.5rem minmax(0,1fr);gap:.5rem;min-height:9rem}.arrow{align-self:center;padding:0;text-align:center}.arrow span{display:none}.arrow.first::before{content:'→'}.arrow.first>b{display:none}.flow .second-arrow{grid-column:3;padding:.5rem;transform:none}.flow .second-arrow span{display:inline}.flow .second-arrow b{display:inline}.flow .third{grid-column:3;grid-row:3}.flow .last{grid-column:1;grid-row:3}.flow .third-arrow{grid-column:2;grid-row:3}.flow .third-arrow b{display:none}.flow .third-arrow::before{content:'←'}}
+@media(max-width:420px){h1{font-size:1.75rem}.sources,.checks,.scope,.status-board{grid-template-columns:1fr}.proof-row{grid-template-columns:1fr;gap:.25rem}.status{padding:.5rem 0}.section{margin-top:1.5rem}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+@media print{button{display:none}.section{break-inside:avoid}body{color:#17191c}.source,.step,.explanation,.scope>div{background:transparent;color:inherit}.quiet,small,.step p{color:#575c63}}
+</style>
+</head>
+<body><main>
+<div class="eyebrow"><span class="dot" aria-hidden="true"></span>Metten · Proposed plan · No accounts connected here</div>
+<h1>Bring in information.<br>Check it. Keep it usable.</h1>
+<p class="intro">Metten should help your strategy act on information it can trust, and explain when it cannot.</p>
+<figure>
+<div class="sources">
+<div class="source main"><span class="tag">Preferred Bitcoin reference</span><h3>BRTI, delivered by Kalshi</h3><p>A Bitcoin reference price calculated by CF Benchmarks.</p><small>The latest price and the average used to decide the market’s outcome are different.</small></div>
+<div class="source"><span class="tag">The market we may buy</span><h3>Kalshi prices and quantities</h3><p>What YES and NO cost, how much is available, and when the market opens and closes.</p><small>A quoted price does not guarantee a purchase.</small></div>
+</div>
+<p class="feed-note">Coinbase and Kraken provide other Bitcoin prices. They keep their own names; Metten never quietly calls them BRTI.</p>
+<div class="flow" role="img" aria-label="Read in order: first receive the information, then check it, then preserve its order, then make verified information available to the strategy. Trading comes later.">
+<div class="step"><span class="step-number">1</span><div><h3>Receive the information</h3><p>Keep shared connections open. Receive updates without repeatedly asking for each new price.</p></div></div>
+<div class="arrow first"><b>↓</b><span>send for checking</span></div>
+<div class="step"><span class="step-number">2</span><div><h3>Check what arrived</h3><p>Is it the right market and price? Is it recent? Did anything go missing?</p></div></div>
+<div class="arrow second-arrow"><b>↓</b><span>keep verified updates</span></div>
+<div class="step third"><span class="step-number">3</span><div><h3>Keep it in order</h3><p>Keep meaningful changes. Avoid counting the same update twice. Stop trusting information if Metten falls behind.</p></div></div>
+<div class="arrow third-arrow"><b>↓</b><span>make usable information available</span></div>
+<div class="step last"><span class="step-number">4</span><div><h3>Ready for your strategy</h3><p>Show what is usable, what is missing, and whether the needed stretch of past prices is complete.</p></div></div>
+</div>
+<figcaption>Fig. 1 · This phase supplies checked information. It does not place trades.</figcaption>
+</figure>
+<div class="later"><strong>Later, separately:</strong> the strategy reaches a decision → purchase safeguards pass → Metten may request a purchase.</div>
+<section class="section" aria-labelledby="states-title"><h2 id="states-title">“Connected” does not always mean “ready.”</h2>
+<p class="example">Illustration: a strategy that needs BRTI and a complete stretch of recent prices. Choose a situation to see the difference.</p>
+<div class="controls" role="group" aria-label="Choose an illustrative situation">
+<button type="button" data-case="normal" aria-pressed="true">Everything is working</button>
+<button type="button" data-case="missing" aria-pressed="false">BRTI stops arriving</button>
+<button type="button" data-case="slow" aria-pressed="false">Metten falls behind</button>
+<button type="button" data-case="recovered" aria-pressed="false">Prices return</button>
+</div>
+<figure><div class="status-board">
+<div class="status"><small>Kalshi market prices</small><div class="state ok" id="book-state">✓ Current</div></div>
+<div class="status"><small>BRTI price</small><div class="state ok" id="brti-state">✓ Current</div></div>
+<div class="status"><small>Needed past prices</small><div class="state ok" id="history-state">✓ Complete</div></div>
+<div class="status"><small>Metten’s processing</small><div class="state ok" id="work-state">✓ Caught up</div></div>
+</div><div class="explanation" aria-live="polite" aria-atomic="true"><h3 id="result-title">The required information is usable.</h3><p id="result-text">The strategy can use these inputs. That does not mean its conditions are met or that a purchase is permitted.</p></div>
+<figcaption>Fig. 2 · A current price, complete past prices and finished processing are separate checks.</figcaption></figure>
+</section>
+<section class="section" aria-labelledby="rollover-title"><h2 id="rollover-title">Have the next market ready before this one ends.</h2>
+<figure><div class="proof">
+<div class="proof-row"><strong>While this market is active</strong><p>Find the next market and start checking its prices. Keep today’s market information separate from the next one.</p></div>
+<div class="proof-row"><strong>When the new market opens</strong><p>Switch to the prepared market if its information is still usable. Keep the Bitcoin price connections running.</p></div>
+<div class="proof-row"><strong>After the switch</strong><p>Stop receiving unnecessary prices for the old market. Prepare the following market. Keep past results.</p></div>
+</div><figcaption>Fig. 4 · A prepared switch needs no new market search at opening time.</figcaption></figure>
+<details><summary>What if the next market is not ready?</summary><p>Show “Next market not ready — checking its information.” Make a small number of spaced checks. Never keep asking in a tight loop, and never use the old market’s prices for the new one.</p><p>A late arrival can be shown when verified. It does not automatically let a strategy enter a market whose start it missed.</p></details>
+<details><summary>What carries forward?</summary><p>Useful Bitcoin price history can continue. The new market gets its own prices and a fresh start for the conditions that belong to that market. Unfinished information is never treated as complete.</p></details>
+</section>
+<section class="section" aria-labelledby="speed-title"><h2 id="speed-title">Fast means useful information arrives in time.</h2>
+<div class="checks">
+<div class="check"><h3>Receive without interruption</h3><p>Opening a screen should not create extra provider requests. Slow screen updates should not hold up incoming prices.</p></div>
+<div class="check"><h3>Finish the work promptly</h3><p>We measure the full journey to usable information, including work still waiting to be processed.</p></div>
+<div class="check"><h3>Handle a busy moment</h3><p>We test a rush of updates. Metten must preserve meaningful changes or clearly say it cannot keep up.</p></div>
+<div class="check"><h3>Recover honestly</h3><p>A fresh price can return before the needed past prices are complete. Metten must show both facts.</p></div>
+</div>
+<details><summary>Why we do not promise “no timeouts”</summary><p>Providers and networks can fail. The plan limits how long Metten waits, how often it tries again, and how many requests it makes. During uncertainty, affected information is marked unusable.</p></details>
+</section>
+<section class="section" aria-labelledby="proof-title"><h2 id="proof-title">What we will prove before trusting it.</h2>
+<div class="proof">
+<div class="proof-row"><strong>It reads the right information.</strong><p>Test the wrong market, old prices, repeated updates and missing updates.</p></div>
+<div class="proof-row"><strong>It stays responsive under pressure.</strong><p>Test busy periods while the screen and other normal work are active.</p></div>
+<div class="proof-row"><strong>It respects provider limits.</strong><p>Count requests and repeat attempts. Stop repeated attempts when a connection is refused or you choose Stop.</p></div>
+<div class="proof-row"><strong>Its claims match the evidence.</strong><p>Record the computer, workload and results. Separate controlled tests from actual provider access.</p></div>
+</div>
+</section>
+<section class="section" aria-labelledby="change-title"><h2 id="change-title">Make the next change easy to find.</h2>
+<p class="example">Each responsibility has one clear home. The guide tells the next person where to change it and which check proves it still works.</p>
+<figure><div class="proof">
+<div class="proof-row"><strong>A provider changes its message.</strong><p>Change that provider’s reader and its example test.</p></div>
+<div class="proof-row"><strong>A strategy changes a supported condition.</strong><p>Save a new strategy version. Leave provider connections alone.</p></div>
+<div class="proof-row"><strong>A connection fails in a new way.</strong><p>Update the connection’s explanation and its matching check.</p></div>
+</div><figcaption>Fig. 3 · Ordinary changes should stay close to the responsibility they affect.</figcaption></figure>
+</section>
+<section class="section" aria-labelledby="scope-title"><h2 id="scope-title">What this phase delivers.</h2><div class="scope">
+<div><h3>This phase</h3><ul><li>Checked market information.</li><li>Clear connection and recovery explanations.</li><li>Protected connection details.</li><li>Measured processing speed.</li><li>A guide to how it works.</li></ul></div>
+<div><h3>Later work</h3><ul><li>Complete trading decisions and purchases.</li><li>Paper trading and purchase outcomes.</li><li>Exact D–H strategy support.</li><li>Additional kinds of information.</li></ul></div>
+</div></section>
+<p class="ending">This is an explanation of the proposed design, not a live dashboard. Connections, speed, access and trading readiness have not been proved by this guide. Better information does not guarantee profitable trades.</p>
+</main>
+<script>
+(()=>{
+const cases={normal:{book:['Current',true],brti:['Current',true],history:['Complete',true],work:['Caught up',true],title:'The required information is usable.',text:'The strategy can use these inputs. That does not mean its conditions are met or that a purchase is permitted.'},missing:{book:['Current',true],brti:['Not arriving',false],history:['Interrupted',false],work:['Caught up',true],title:'This strategy must wait for BRTI.',text:'Other Bitcoin prices may still arrive. They do not become BRTI. This example assumes the Kalshi market connection remains available; a wider Kalshi outage could interrupt both.'},slow:{book:['Arriving',true],brti:['Arriving',true],history:['Cannot yet trust',false],work:['Behind — not usable',false],title:'Arriving prices are not finished work.',text:'Metten marks affected information unusable and rebuilds its current view. It must not present an old result as a current one just because new prices are arriving.'},recovered:{book:['Current',true],brti:['Current again',true],history:['Missing stretch remains',false],work:['Caught up',true],title:'Prices are back. This strategy still needs history.',text:'The current price can be shown again. The strategy in this example waits until its needed stretch of prices is complete. Metten never pretends it saw prices during the interruption.'}};
+const buttons=[...document.querySelectorAll('[data-case]')];
+function show(key){const c=cases[key];if(!c)throw Error('Unknown guide situation');for(const field of ['book','brti','history','work']){const e=document.getElementById(field+'-state');e.textContent=(c[field][1]?'✓ ':'△ ')+c[field][0];e.className='state '+(c[field][1]?'ok':'wait');}document.getElementById('result-title').textContent=c.title;document.getElementById('result-text').textContent=c.text;buttons.forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.case===key)));}
+buttons.forEach(b=>b.addEventListener('click',()=>show(b.dataset.case)));
+for(const key of Object.keys(cases)){show(key);if(document.querySelectorAll('[aria-pressed="true"]').length!==1||document.getElementById('result-title').textContent!==cases[key].title)throw Error('Guide interaction check failed');}
+show('normal');
+})();
+</script>
+</body></html>

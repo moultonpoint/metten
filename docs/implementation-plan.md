@@ -8,6 +8,10 @@ Engineering owns routine interface and schema details. Do not invent D/F strateg
 
 GitHub issue bodies own the acceptance criteria and current status. This document is an index, not a second task tracker.
 
+## Prototype verification scope
+
+Owner-approved 18 November 2026: issues 5 and 6 deliver the read-only source prototype and controlled paper purchase lifecycle using ordinary correctness and bounded integration checks. Sustained-capacity calibration, long frozen qualification and performance/collector investigations belong to issue 16 and are not prerequisites for those prototypes. Historical failed qualification remains failed; no supported capacity or real-provider acceptance is inferred. Existing financial, credential, data-integrity and shutdown protections remain.
+
 ## Issue sequence
 
 1. **[Choose the permissive license](https://github.com/moultonpoint/metten/issues/1)** — **completed: MIT selected and applied.**

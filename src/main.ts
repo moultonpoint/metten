@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Action, Snapshot, StrategyRequest, StrategyResponse, StrategyDetail } from './contract';
-import { presentation, strategyFailure } from './view';
+import type { Action, Snapshot, StrategyRequest, StrategyResponse, StrategyDetail, SourceName, SourceRequest, SourceResponse, SourceSnapshot, ProviderCredentialResponse } from './contract';
+import { presentation, strategyFailure, sourceFailure, sourcePresentation } from './view';
 import './style.css';
 
 function element<T extends HTMLElement>(id: string): T {
@@ -201,3 +201,97 @@ element('strategy-copy').addEventListener('click', () => {
 element('strategy-reload').addEventListener('click', () => void loadStrategies());
 moreButton.addEventListener('click', () => { if (nextCursor) void loadStrategies(nextCursor); });
 void loadStrategies();
+
+const sourceNames: SourceName[] = ['kalshi', 'brti', 'coinbase', 'kraken'];
+const sourcePanel = element<HTMLDetailsElement>('sources-panel');
+let sourceGeneration = 0;
+let sourceInFlight = false;
+let sourceWanted: SourceRequest | null = null;
+let sourceTimer: number | undefined;
+let sourceOwner = '';
+let sourceRevision = '0';
+let sourceActionPending = false;
+let sourceActionSequence = 0;
+function sourcesActive() { return sourcePanel.open && !document.hidden; }
+function renderSources(snapshot: SourceSnapshot) {
+  if (snapshot.owner === sourceOwner && BigInt(snapshot.revision) < BigInt(sourceRevision)) return;
+  sourceOwner = snapshot.owner; sourceRevision = snapshot.revision;
+  element('source-environment').textContent = `${snapshot.environment === 'production' ? 'Production market data' : 'Demo'} · Read-only`;
+  element('provider-environment').textContent = `${snapshot.environment === 'production' ? 'Production' : 'Demo'} API key. Shared by Kalshi and BRTI. Saving a key does not connect either source.`;
+  element('source-markets').textContent = `Current market: ${snapshot.current_market ?? 'not verified'}\n${snapshot.markets.map(m => `${m.market_id} · ${m.preparation}${m.verified ? '' : ' · metadata unverified'}`).join('\n') || 'Next market not ready — checking its information.'}`;
+  for (const name of sourceNames) element(`source-${name}-status`).textContent = sourcePresentation(snapshot, name);
+}
+function scheduleSourceRead() {
+  if (sourceTimer !== undefined) window.clearTimeout?.(sourceTimer);
+  if (sourcesActive()) sourceTimer = window.setTimeout(() => { sourceTimer = undefined; queueSourceRead({ operation: 'snapshot' }); }, 1000);
+}
+function queueSourceRead(request: SourceRequest) {
+  if (sourceTimer !== undefined) { window.clearTimeout?.(sourceTimer); sourceTimer = undefined; }
+  sourceWanted = request;
+  sourceGeneration++;
+  void drainSourceRead();
+}
+async function drainSourceRead() {
+  if (sourceInFlight || !sourcesActive() || sourceActionPending || !sourceWanted) return;
+  sourceInFlight = true;
+  const request = sourceWanted; sourceWanted = null;
+  const generation = sourceGeneration;
+  try {
+    const result = await invoke<SourceResponse>('sources', request);
+    if (generation !== sourceGeneration || !sourcesActive()) return;
+    if (result.kind === 'snapshot') renderSources(result);
+    else if (result.kind === 'details') element('source-details').textContent = `${result.source}\n${JSON.stringify({ values: result.values, bindings: result.bindings }, null, 2)}\n${result.notice}${result.counters ? '\nLocal provider counters: ' + JSON.stringify(result.counters) : ''}`;
+    else if (result.kind === 'requirements') element('source-requirements').textContent = `Version ${result.version_id}\n${result.requirements.map(r => `${r.input_id}: ${r.source}.${r.instrument}.${r.field} · ${r.unit} · ${r.side ?? 'underlying'} · startup ${r.startup_ms} ms${r.implicit ? ' · implicit' : ''}`).join('\n')}`;
+  } catch (failure) {
+    if (generation === sourceGeneration && sourcesActive()) element('source-status').textContent = sourceFailure(failure);
+  } finally {
+    sourceInFlight = false;
+    if (sourceWanted) void drainSourceRead(); else scheduleSourceRead();
+  }
+}
+sourcePanel.addEventListener('toggle', () => {
+  sourceGeneration++;
+  if (sourcesActive()) queueSourceRead({ operation: 'snapshot' });
+  else { sourceWanted = null; if (sourceTimer !== undefined) window.clearTimeout?.(sourceTimer); }
+});
+document.addEventListener?.('visibilitychange', () => {
+  sourceGeneration++;
+  if (sourcesActive()) queueSourceRead({ operation: 'snapshot' });
+  else if (sourceTimer !== undefined) window.clearTimeout?.(sourceTimer);
+});
+for (const name of sourceNames) {
+  for (const operation of ['connect', 'disconnect'] as const) element(`source-${name}-${operation}`).addEventListener('click', () => {
+    sourceGeneration++;
+    if (sourceActionPending && operation === 'connect') { element('source-status').textContent = 'A source action is in progress. Wait and retry.'; return; }
+    const actionSequence = ++sourceActionSequence;
+    const ownsPending = !sourceActionPending;
+    sourceActionPending = true;
+    element('source-status').textContent = `${operation === 'connect' ? 'Connecting' : 'Disconnecting'} ${name}…`;
+    void invoke<SourceResponse>('sources', { operation, source: name }).then(() => {
+      if (actionSequence !== sourceActionSequence) return;
+      element('source-status').textContent = operation === 'connect' ? `Connection requested for ${name}. Waiting for verified source data.` : `${name} disconnected.`;
+    }).catch(failure => { if (actionSequence === sourceActionSequence) element('source-status').textContent = sourceFailure(failure); }).finally(() => {
+      if (ownsPending) sourceActionPending = false;
+      queueSourceRead({ operation: 'snapshot' });
+    });
+  });
+  element(`source-${name}-details`).addEventListener('click', () => queueSourceRead({ operation: 'details', source: name }));
+}
+element('source-inspect').addEventListener('click', () => queueSourceRead({ operation: 'inspect', version_id: element<HTMLInputElement>('source-version').value }));
+let providerPending = false;
+for (const operation of ['status', 'save', 'replace', 'remove'] as const) element(`provider-${operation}`).addEventListener('click', () => {
+  const secret = element<HTMLTextAreaElement>('provider-private-key');
+  const private_key = secret.value; secret.value = '';
+  if (providerPending) return;
+  providerPending = true; sourceGeneration++;
+  const buttons = ['status', 'save', 'replace', 'remove'].map(name => element<HTMLButtonElement>(`provider-${name}`));
+  buttons.forEach(button => { button.disabled = true; });
+  const status = element('provider-status-text'); status.textContent = 'Checking credential action…';
+  const material = operation === 'save' || operation === 'replace' ? { key_id: element<HTMLInputElement>('provider-key-id').value, private_key } : {};
+  void invoke<ProviderCredentialResponse>('provider_credential', { operation, provider: 'kalshi', ...material }).then(result => {
+    status.textContent = result.kind === 'saved' ? `Saved: ${result.key_id} · ${result.key_type}` : result.kind === 'missing' ? 'Missing credential.' : `Credential ${result.operation} confirmed. Connect explicitly when ready.`;
+  }).catch(failure => { status.textContent = sourceFailure(failure); }).finally(() => {
+    providerPending = false; buttons.forEach(button => { button.disabled = false; }); queueSourceRead({ operation: 'snapshot' });
+  });
+});
+if (sourcesActive()) queueSourceRead({ operation: 'snapshot' });

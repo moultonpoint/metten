@@ -8,7 +8,7 @@ The current non-trading package checklist, prerequisites, artifact identity, con
 
 ## Overview
 
-[verify-credential.swift](verify-credential.swift) is the dummy-only packaged-app runner for issue #3. It is a verification tool, not part of the trading engine. Its completed evidence and limitations are in [issue-3.md](../docs/verification/issue-3.md); process-only regression checks are described in [tests](../tests/README.md).
+[verify-credential.swift](verify-credential.swift) owns the default dummy packaged-app walkthrough for issue #3 and the explicit native provider check for step 3 of issue #5. It is a verification tool, not part of the trading engine. Its completed evidence and limitations are in [issue-3.md](../docs/verification/issue-3.md); process-only regression checks are described in [tests](../tests/README.md).
 
 ## Interface
 
@@ -33,3 +33,66 @@ Normal execution launches Metten repeatedly, creates two disposable Keychains an
 ## Verification
 
 `python3 tests/credential-runner.test.py` compiles this runner and exercises the process-only self-test. The separate packaged invocation is documented in [issue-3.md](../docs/verification/issue-3.md). Do not rerun packaged credential verification for ordinary documentation-only changes. An explicitly requested checklist execution, such as issue #31, records fresh artifact/environment evidence and distinguishes it from earlier bounded results.
+
+## Packaged provider credential check (step 3)
+
+`swift scripts/verify-credential.swift --provider-credentials target/release/bundle/macos/Metten.app`
+uses the same owned-process/private-descriptor/disposable-Keychain/cleanup machinery.
+It needs no renderer/Accessibility interaction: the finished executable validates
+a strict sources-mode bootstrap, performs finite controlled provider credential
+operations and verifies a local signature, acknowledges completion, and exits.
+The runner separately confirms exit, scans outputs/files for private-key PEM
+markers and dummy values, and verifies unchanged global Keychain metadata.
+Invalid bootstrap fails closed before ordinary startup. It never connects to a
+provider or reads ordinary credential items. This is not the step-5 source-frame
+walkthrough. Default dummy UI mode remains separate, including its prompt checks.
+
+## Isolated sources walkthrough (step 5)
+
+`swift scripts/verify-credential.swift --sources <finished.app>` selects a strict
+sources bootstrap and an owned disposable workspace/Keychain, opens Sources and
+uses ordinary provider credential/source commands through Accessibility. Controlled
+RSA keys are generated in memory by the installed OpenSSL tool; they are never
+arguments, files or output. The walkthrough checks save/duplicate/replace/reopen/
+remove, four logical connections over the controlled native connections and
+synthetic provider frames. Payload strings retain lexical numbers. Every frame
+waits for its native publication acknowledgment before the next is sent.
+
+The native source mode is permanently isolated, including after channel failure;
+it cannot read ordinary credential items or construct production requests. No
+account/provider/paid access is authorized by this tool. The early
+`--provider-credentials` native signature/fixed-item check remains a distinct mode.
+Default dummy behavior remains unchanged; the three walkthrough modes are not
+interchangeable acceptance evidence.
+
+Source framing uses four-byte big-endian length, 256-KiB envelope/128-KiB payload,
+exact session and positive canonical decimal-string u64 sequence. Native reads
+and processing/ack phases each have a two-second total deadline; the runner's
+ack wait is at most three seconds. Ack1 follows accepted or explicitly invalid
+native publication, not GUI painting. Failed/late ack, EOF or Quit fails and
+revokes fixture evidence. The runner preserves exact-child exit observation,
+marker scans, unchanged global Keychain metadata and owned-only cleanup. If
+WebKit controls are inaccessible, record that concrete GUI blocker; never claim
+native-only or process-only checks establish the walkthrough. Do not rerun an
+unchanged known-blocked dummy GUI route merely to repeat it.
+
+The Sources adapter expands a uniquely titled owned disclosure using its supported
+focus relationship and an exact-child Space event, then observes AXExpanded.
+WebKit on the tested host advertises no Press action for these disclosures and
+non-settable AXValue/AXExpanded; calls can return success without a state change.
+Inputs use focused exact-child Unicode key events, never clipboard or coordinates,
+and require exact in-memory readback without printing the material. Source rows
+are selected by their own DOM identifier and checked for distinct values, units
+and identities. A fresh BRTI tick after scoped Kalshi disconnect checks retained
+shared ownership. Save/duplicate/replace require an empty actual secret field
+before waiting for credential completion; this is prompt packaged observation,
+while the frontend test separately establishes synchronous clearing semantics.
+Process-only assertion checks do not establish real WebKit access.
+
+A directly spawned app is activated once before disclosure discovery, with a
+bounded 20-second readiness wait; its window may otherwise remain absent. The
+tested WebKit exposes visual source-row line breaks as spaces in AXStaticText.
+Row assertions therefore normalize whitespace and match complete token sequences,
+retaining exact price/unit/identity boundaries rather than relying on visual
+lines or unrestricted substrings. The process regression includes the captured
+controlled-row shape and rejects price, precision, unit and identity collisions.

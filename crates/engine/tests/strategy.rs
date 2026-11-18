@@ -1,5 +1,81 @@
 use metten_engine::strategy::*;
 use serde_json::{Value, json};
+
+#[test]
+fn source_atomic_value_and_validity_never_evaluate_an_intermediate_state() {
+    let mut rule =
+        current_rule(json!({"type":"held_for","duration_seconds":1,"condition":ask_below()}));
+    rule["checkpoints"] = json!([{"id":"held","remember_side":{"type":"fixed","side":"yes"},"when":rule["purchase_options"][0]["when"].clone()}]);
+    for reverse in [false, true] {
+        let mut e = entered(rule.clone());
+        let mut changes = vec![
+            observation_change(1, 2, "60"),
+            EvidenceChange::Validity {
+                binding_id: 1,
+                valid_until_ms: 900001,
+                reason: None,
+            },
+        ];
+        if reverse {
+            changes.reverse();
+        }
+        let mut b = batch(1001, 3, changes);
+        b.coverage.push(CoverageFact {
+            binding_id: 1,
+            start_ms: 1,
+            end_ms: 1001,
+        });
+        let d = finish(&mut e, b, Some(objective()));
+        assert!(!d.checkpoints.contains_key("held"));
+        assert!(d.candidate.is_none());
+    }
+}
+
+#[test]
+fn source_invalid_pair_cannot_be_revived_by_a_lease_or_replay() {
+    for reverse in [false, true] {
+        let mut e = entered(current_rule(ask_below()));
+        let mut changes = vec![
+            observation_change(1, 2, "30"),
+            EvidenceChange::Validity {
+                binding_id: 1,
+                valid_until_ms: 0,
+                reason: Some("controlled loss".into()),
+            },
+        ];
+        if reverse {
+            changes.reverse();
+        }
+        assert!(
+            finish(&mut e, batch(2, 3, changes), Some(objective()))
+                .candidate
+                .is_none()
+        );
+        assert!(
+            finish(&mut e, batch(3, 4, vec![lease(1)]), Some(objective()))
+                .candidate
+                .is_none()
+        );
+        assert!(
+            finish(
+                &mut e,
+                batch(3, 5, vec![observation_change(1, 2, "30")]),
+                Some(objective())
+            )
+            .candidate
+            .is_none()
+        );
+        assert!(
+            finish(
+                &mut e,
+                batch(4, 6, vec![observation_change(1, 3, "30")]),
+                Some(objective())
+            )
+            .candidate
+            .is_some()
+        );
+    }
+}
 fn format2() -> Value {
     json!({"format":2,"name":"Controlled asks","inputs":[{"id":"ask","source":"kalshi","instrument":"current_contract","field":"buyable_ask","unit":"contract_cents","side":"selected_side"}],"checkpoints":[{"id":"early","during":{"start_seconds":0,"end_seconds":60},"remember_side":{"type":"unique_side"},"when":{"type":"compare","left":{"reference":"ask"},"comparison":"less_than","right":{"value":"40","unit":"contract_cents"}}}],"purchase_options":[{"id":"opposite","during":{"start_seconds":60,"end_seconds":120},"side":{"type":"checkpoint_side","checkpoint":"early","relation":"opposite"},"when":{"type":"compare","left":{"reference":"ask"},"comparison":"at_most","right":{"value":"30","unit":"contract_cents"}}},{"id":"same","during":{"start_seconds":60,"end_seconds":120},"side":{"type":"checkpoint_side","checkpoint":"early","relation":"same"},"when":{"type":"compare","left":{"reference":"ask"},"comparison":"at_most","right":{"value":"30","unit":"contract_cents"}}}]})
 }
@@ -3123,4 +3199,213 @@ fn review_historical_cells_retain_same_time_invalidity() {
             );
         }
     }
+}
+
+#[test]
+fn source_requirements_and_implicit_explanations_come_from_validated_rules() {
+    for side in ["selected_side", "yes", "no"] {
+        let mut r = current_rule(ask_below());
+        r["inputs"][0]["side"] = json!(side);
+        let v = ValidatedStrategy::parse(&r.to_string()).unwrap();
+        let inputs = v.source_requirements();
+        assert_eq!(inputs[0].source, Source::Kalshi);
+        assert_eq!(inputs[0].unit, RuleUnit::ContractCents);
+        assert_eq!(inputs[0].startup_ms, 0);
+        assert!(!inputs[0].implicit);
+        assert_eq!(
+            inputs[0].side,
+            Some(match side {
+                "yes" => SourceSide::Fixed(Side::Yes),
+                "no" => SourceSide::Fixed(Side::No),
+                _ => SourceSide::Selected,
+            })
+        );
+        let implicit: Vec<_> = inputs
+            .iter()
+            .filter(|i| i.implicit)
+            .map(|i| i.input_id.as_str())
+            .collect();
+        let expected: Vec<_> = match side {
+            "yes" => vec!["__buyable_ask_no"],
+            "no" => vec!["__buyable_ask_yes"],
+            _ => vec![],
+        };
+        assert_eq!(implicit, expected);
+        for id in expected {
+            let exact = format!(
+                "Required implicit binding {id}: kalshi current_contract buyable_ask, contract_cents, exact market/contract and matching side. Source access is unverified.\n"
+            );
+            assert_eq!(
+                v.explanation()
+                    .split_inclusive('\n')
+                    .find(|line| line.starts_with(&format!("Required implicit binding {id}:"))),
+                Some(exact.as_str())
+            );
+        }
+        assert_eq!(v.json(), r.to_string());
+    }
+    let mut r = historical_rule("rolling_average", "100");
+    r["measurements"].as_array_mut().unwrap().push(json!({"id":"outer","operation":"change","of":{"reference":"measured"},"lookback_seconds":2}));
+    let v = ValidatedStrategy::parse(&r.to_string()).unwrap();
+    assert_eq!(
+        v.source_requirements()[0].startup_ms,
+        v.requirements().startup_ms["underlying"]
+    );
+    assert_eq!(v.source_requirements()[0].startup_ms, 3000);
+    r["inputs"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|i| i["id"] != "ask");
+    let v = ValidatedStrategy::parse(&r.to_string()).unwrap();
+    assert_eq!(
+        v.source_requirements()
+            .iter()
+            .filter(|i| i.implicit)
+            .count(),
+        2
+    );
+    for input in v.source_requirements().iter().filter(|i| i.implicit) {
+        let expected = format!(
+            "Required implicit binding {}: kalshi current_contract buyable_ask, contract_cents, exact market/contract and matching side. Source access is unverified.\n",
+            input.input_id
+        );
+        assert!(
+            v.explanation()
+                .split_inclusive('\n')
+                .any(|line| line == expected)
+        );
+        assert_eq!(input.startup_ms, 0);
+    }
+}
+
+#[test]
+fn source_member_mask_rejects_every_forbidden_combination_before_mutation() {
+    let changes = [
+        observation_change(1, 2, "30"),
+        EvidenceChange::Resynchronize {
+            binding_id: 1,
+            value: Decimal::parse("30").unwrap(),
+        },
+        lease(1),
+        EvidenceChange::Gap {
+            binding_id: 1,
+            start_ms: 1,
+            end_ms: 2,
+            reason: "controlled".into(),
+        },
+    ];
+    for a in 0..4 {
+        for b in 0..4 {
+            if (a == 2 && b < 2) || (b == 2 && a < 2) {
+                continue;
+            }
+            let mut e = entered(current_rule(ask_below()));
+            let before = e.snapshot().checkpoints.clone();
+            e.begin(batch(2, 3, vec![changes[a].clone(), changes[b].clone()]))
+                .unwrap();
+            loop {
+                match e.process_slice(SliceControl::Continue, Some(objective())) {
+                    SliceResult::Pending { .. } => (),
+                    SliceResult::Rejected(err) => {
+                        assert_eq!(err.code, "unregistered_binding");
+                        break;
+                    }
+                    other => panic!("pair {a}/{b}: {other:?}"),
+                }
+            }
+            assert_eq!(e.snapshot().checkpoints, before);
+            assert!(
+                finish(&mut e, batch(2, 3, vec![]), Some(objective()))
+                    .candidate
+                    .is_some()
+            );
+        }
+    }
+    let mut e = entered(current_rule(ask_below()));
+    finish(
+        &mut e,
+        batch(
+            2,
+            3,
+            vec![changes[3].clone(), observation_change(2, 2, "60")],
+        ),
+        Some(objective()),
+    );
+}
+
+#[test]
+fn source_resynchronize_pair_does_not_count_or_cross_and_identity_stays_separate() {
+    let mut e = entered(current_rule(
+        json!({"type":"confirmed_updates","count":2,"count_input":"ask","condition":ask_below()}),
+    ));
+    let pair = vec![
+        EvidenceChange::Resynchronize {
+            binding_id: 1,
+            value: Decimal::parse("30").unwrap(),
+        },
+        EvidenceChange::Validity {
+            binding_id: 1,
+            valid_until_ms: 100,
+            reason: None,
+        },
+    ];
+    assert!(
+        finish(&mut e, batch(2, 3, pair.clone()), Some(objective()))
+            .candidate
+            .is_none()
+    );
+    assert!(
+        finish(
+            &mut e,
+            batch(2, 4, vec![observation_change(1, 2, "30"), lease(1)]),
+            Some(objective())
+        )
+        .candidate
+        .is_some()
+    );
+    let mut e = entered(current_rule(
+        json!({"type":"crossed_below","left":{"reference":"ask"},"right":{"value":"40","unit":"contract_cents"}}),
+    ));
+    finish(
+        &mut e,
+        batch(2, 3, vec![observation_change(1, 2, "60")]),
+        Some(objective()),
+    );
+    assert!(
+        finish(&mut e, batch(3, 4, pair.clone()), Some(objective()))
+            .candidate
+            .is_none()
+    );
+    let mut r = current_rule(
+        json!({"type":"after_checkpoint_update","checkpoint":"seen","count_input":"ask"}),
+    );
+    r["checkpoints"] =
+        json!([{"id":"seen","remember_side":{"type":"fixed","side":"yes"},"when":ask_below()}]);
+    let mut e = entered(r);
+    assert!(
+        finish(
+            &mut e,
+            batch(
+                2,
+                3,
+                vec![
+                    observation_change(1, 2, "30"),
+                    EvidenceChange::Validity {
+                        binding_id: 1,
+                        valid_until_ms: 0,
+                        reason: Some("controlled loss".into())
+                    }
+                ]
+            ),
+            Some(objective())
+        )
+        .candidate
+        .is_none()
+    );
+    // The later genuine identity remains observed; fresh present data is still required.
+    assert!(
+        finish(&mut e, batch(3, 4, pair), Some(objective()))
+            .candidate
+            .is_some()
+    );
 }

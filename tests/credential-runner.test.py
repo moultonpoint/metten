@@ -41,6 +41,11 @@ class CredentialRunnerRecovery(unittest.TestCase):
             self.assertIn("closed private channel write caught without terminating runner", result)
             self.assertIn("late child exit recovered, channels closed, unsuccessful exit stays failed", result)
             self.assertIn("noisy child exited within deadline; all output captured and markers rejected", result)
+            self.assertIn("provider mode, bootstrap shape, rejected/late/closed acknowledgments", result)
+            self.assertIn("sources mode, decimal sequence, lexical payload and bounded envelope", result)
+            self.assertIn("source assertions reject wrong value, identity and connection state", result)
+            self.assertIn("source assertions reject suffix collisions and extra value text", result)
+            self.assertIn("observed WebKit flattened text preserves exact price, unit and identity checks", result)
             print(result, end="")
 
 

@@ -41,3 +41,29 @@ This contract covers the session, isolated dummy credentials and completed local
 ## Verification
 
 From the repository root, `npm run check` performs TypeScript checking and runs `tests/*.test.mjs`. `npm run build` checks types and builds the Vite interface; it does not establish native packaging or Keychain behavior. See [test boundaries](../tests/README.md). No tests, build, browser, native app, or credential operations were run for this documentation change.
+
+## Sources interface (step 5)
+
+The explicit `sources-panel` details section activates one local source read per
+second while open and visible. Snapshot, details and saved-requirement inspection
+share one read slot; only the newest desired display request is retained. Action,
+selection and visibility generations suppress obsolete successes and failures.
+Owner/revision comparisons use exact string/BigInt semantics; the foundation
+200-ms poll is unchanged. No screen read connects or polls a provider.
+
+Four fixed rows expose named source actions and native-derived values/units/
+identity/receipt age, current/next preparation and unsupported history/reference
+facts. Expired verified values show “Stale data”; closed-market values show “Market closed” with the last value retained. These are distinct from awaiting data and unverified freshness. Explicit refusal differs from silence/awaiting data. Kalshi/BRTI share
+credential identity; no spot substitution exists. `sourcePresentation` and
+`sourceFailure` are pure finite presentation helpers. Dynamic text is literal.
+Failure reasons render even when no price has arrived; an explicit invalid-data
+reason is not presented as ordinary waiting. Provider PEM input is obscured and
+clears synchronously before submission,
+including Busy/error paths. It is never repopulated or persisted by the frontend.
+Actual OS protection/native IPC and packaged GUI acceptance require separate
+proof; VM checks and headless rendering do not supply it.
+
+The owner-requested cleanup/brand pass makes Sources the initial active section, with four flat feed rows and progressive credential/requirement details. It uses the unchanged approved 240px-visible SVG lockup, cobalt/ink/chalk palette and locally bundled licensed Inter at weights400/500/600. Runtime asset provenance is in [assets/fonts](../assets/fonts/README.md). Existing session/strategy/dummy IDs and commands remain available below; only the source screen's visual hierarchy and wording changed.
+
+
+Native source snapshots identify `demo` or `production`; the header and credential help show that environment. Ordinary setup now uses production market data, while the isolated walkthrough remains Demo. Credential requests contain no environment selector: native transport ownership chooses the matching fixed Keychain item. No source connects automatically and trading remains unavailable. The Sources VM regression covers disclosure and the selector-free request.

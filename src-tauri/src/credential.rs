@@ -35,14 +35,22 @@ const LOCKED: &str =
 const CHANNEL: &str =
     "Verification unavailable — prepare one fresh expectation in the runner, then retry.";
 
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum VerificationMode {
+    Dummy,
+    Sources,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Bootstrap {
+pub(crate) struct Bootstrap {
     path: PathBuf,
     device: u64,
     inode: u64,
     password: String,
     session: String,
+    #[serde(default)]
+    mode: Option<VerificationMode>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -84,11 +92,14 @@ fn receive(
     Ok(())
 }
 fn frame(stream: &mut UnixStream) -> Result<Vec<u8>, &'static str> {
+    bounded_frame(stream, 4096)
+}
+fn bounded_frame(stream: &mut UnixStream, ceiling: usize) -> Result<Vec<u8>, &'static str> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut length = [0; 4];
     receive(stream, &mut length, deadline)?;
     let length = u32::from_be_bytes(length) as usize;
-    if !(1..=4096).contains(&length) {
+    if !(1..=ceiling).contains(&length) {
         return Err(CHANNEL);
     }
     let mut bytes = vec![0; length];
@@ -201,7 +212,7 @@ impl Bootstrap {
         }
         Ok(())
     }
-    fn record_native_write(&mut self) -> Result<(), &'static str> {
+    pub(crate) fn record_native_write(&mut self) -> Result<(), &'static str> {
         // Security atomically replaces file-Keychains on successful writes.
         // Accept a new file identity only immediately after our own successful API call.
         let file = std::fs::symlink_metadata(&self.path).map_err(|_| UNAVAILABLE)?;
@@ -215,7 +226,24 @@ impl Bootstrap {
         self.inode = file.ino();
         self.validate()
     }
-    fn open(&self) -> Result<CFType, &'static str> {
+    fn activate(&mut self) -> Result<(), &'static str> {
+        if !(32..=128).contains(&self.password.len()) || self.session.len() != 32 {
+            return Err(UNAVAILABLE);
+        }
+        let keychain = self.open()?;
+        unsafe {
+            map_status(SecKeychainUnlock(
+                keychain.as_CFTypeRef() as _,
+                self.password.len() as u32,
+                self.password.as_ptr().cast(),
+                1,
+            ))?;
+        }
+        unlocked(&keychain)?;
+        self.password = String::new();
+        Ok(())
+    }
+    pub(crate) fn open(&self) -> Result<CFType, &'static str> {
         self.validate()?;
         let path =
             CString::new(self.path.as_os_str().as_encoded_bytes()).map_err(|_| UNAVAILABLE)?;
@@ -246,7 +274,37 @@ impl Bootstrap {
         }
     }
 }
+fn read_bootstrap(sources: bool) -> Result<(Bootstrap, UnixStream), &'static str> {
+    if std::env::var("METTEN_VERIFY_FD").ok().as_deref() != Some("3") {
+        return Err(UNAVAILABLE);
+    }
+    let mut stream = unsafe { UnixStream::from_raw_fd(3) };
+    stream.peer_addr().map_err(|_| UNAVAILABLE)?;
+    let mut target: Bootstrap =
+        serde_json::from_slice(&frame(&mut stream)?).map_err(|_| UNAVAILABLE)?;
+    if (target.mode == Some(VerificationMode::Sources)) != sources {
+        return Err(UNAVAILABLE);
+    }
+    target.activate()?;
+    Ok((target, stream))
+}
+pub(crate) fn source_setup() -> Result<Option<(Bootstrap, UnixStream, String)>, &'static str> {
+    if std::env::var("METTEN_SOURCES_CHECK").ok().as_deref() != Some("1") {
+        return Ok(None);
+    }
+    let (target, stream) = read_bootstrap(true)?;
+    let session = target.session.clone();
+    Ok(Some((target, stream, session)))
+}
 impl Credentials {
+    pub fn disabled() -> Self {
+        Self {
+            target: Mutex::new(None),
+            verifier: Arc::new(Mutex::new(Verifier::default())),
+            operation: Mutex::new(()),
+        }
+    }
+
     pub fn begin_operation<'a>(
         &'a self,
         quitting: &std::sync::atomic::AtomicBool,
@@ -258,36 +316,7 @@ impl Credentials {
         Ok(guard)
     }
     pub fn setup() -> Self {
-        let setup = (|| -> Result<(Bootstrap, UnixStream), &'static str> {
-            if std::env::var("METTEN_VERIFY_FD").ok().as_deref() != Some("3") {
-                return Err(UNAVAILABLE);
-            }
-            let mut stream = unsafe { UnixStream::from_raw_fd(3) };
-            stream.peer_addr().map_err(|_| UNAVAILABLE)?;
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .map_err(|_| UNAVAILABLE)?;
-            let mut target: Bootstrap =
-                serde_json::from_slice(&frame(&mut stream)?).map_err(|_| UNAVAILABLE)?;
-            if target.password.len() < 32
-                || target.password.len() > 128
-                || target.session.len() != 32
-            {
-                return Err(UNAVAILABLE);
-            }
-            let keychain = target.open()?;
-            unsafe {
-                map_status(SecKeychainUnlock(
-                    keychain.as_CFTypeRef() as _,
-                    target.password.len() as u32,
-                    target.password.as_ptr().cast(),
-                    1,
-                ))?;
-            }
-            unlocked(&keychain)?;
-            target.password = String::new();
-            Ok((target, stream))
-        })();
+        let setup = read_bootstrap(false);
         let verifier = Arc::new(Mutex::new(Verifier::default()));
         let target = match setup {
             Ok((target, stream)) => {
@@ -419,7 +448,7 @@ impl Credentials {
         }
     }
 }
-fn unlocked(keychain: &CFType) -> Result<(), &'static str> {
+pub(crate) fn unlocked(keychain: &CFType) -> Result<(), &'static str> {
     let mut status = 0;
     unsafe {
         map_status(SecKeychainGetStatus(
@@ -429,6 +458,36 @@ fn unlocked(keychain: &CFType) -> Result<(), &'static str> {
     }
     if status & 1 == 0 { Err(LOCKED) } else { Ok(()) }
 }
+// The step-3 packaged check consumes the same private descriptor and validated
+// disposable target, before ordinary startup; it never creates a renderer command.
+pub(crate) fn provider_check() -> Option<i32> {
+    if std::env::var("METTEN_PROVIDER_CHECK").ok().as_deref() != Some("1") {
+        return None;
+    }
+    let result = (|| -> Result<(), &'static str> {
+        let (target, mut stream) = read_bootstrap(true)?;
+        crate::provider_credential::verify_packaged(target).map_err(|_| UNAVAILABLE)?;
+        stream.write_all(&[1]).map_err(|_| UNAVAILABLE)?;
+        Ok(())
+    })();
+    Some(if result.is_ok() { 0 } else { 1 })
+}
+#[cfg(test)]
+impl Bootstrap {
+    pub(crate) fn fixture(path: PathBuf) -> Self {
+        let path = path.canonicalize().unwrap();
+        let m = std::fs::metadata(&path).unwrap();
+        Self {
+            path,
+            device: m.dev(),
+            inode: m.ino(),
+            password: String::new(),
+            session: String::new(),
+            mode: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +496,22 @@ mod tests {
             target: Mutex::new(None),
             verifier: Arc::new(Mutex::new(Verifier::default())),
             operation: Mutex::new(()),
+        }
+    }
+    #[test]
+    fn bootstrap_modes_are_finite_strict_and_default_to_dummy() {
+        let fields = r#""path":"/invalid","device":1,"inode":1,"password":"controlled","session":"controlled""#;
+        let parse =
+            |extra: &str| serde_json::from_str::<Bootstrap>(&format!("{{{fields}{extra}}}"));
+        assert!(parse("").unwrap().mode.is_none());
+        assert!(parse(",\"mode\":\"dummy\"").unwrap().mode == Some(VerificationMode::Dummy));
+        assert!(parse(",\"mode\":\"sources\"").unwrap().mode == Some(VerificationMode::Sources));
+        for bad in [
+            ",\"mode\":\"unknown\"",
+            ",\"mode\":\"sources\",\"mode\":\"dummy\"",
+            ",\"extra\":1",
+        ] {
+            assert!(parse(bad).is_err());
         }
     }
     #[test]
@@ -506,6 +581,7 @@ mod tests {
             inode: metadata.ino(),
             password: String::new(),
             session: String::new(),
+            mode: None,
         };
         assert!(target.validate().is_ok());
         let alias = directory.join("alias");
@@ -572,5 +648,352 @@ mod tests {
         assert_eq!(send(&mut sender, 1), 0);
         assert!(state.lock().unwrap().failed);
         thread.join().unwrap();
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceFrame<'a> {
+    session: &'a str,
+    sequence: &'a str,
+    kind: &'a str,
+    provider: &'a str,
+    #[serde(borrow)]
+    payload: std::borrow::Cow<'a, str>,
+}
+fn source_frame<'a>(
+    bytes: &'a [u8],
+    session: &str,
+    expected: u64,
+) -> Result<(crate::providers::Provider, std::borrow::Cow<'a, str>), &'static str> {
+    use crate::providers::Provider;
+    if bytes.len() > 256 * 1024 {
+        return Err(CHANNEL);
+    }
+    let frame: SourceFrame<'a> = serde_json::from_slice(bytes).map_err(|_| CHANNEL)?;
+    if frame.session != session
+        || frame.kind != "provider_frame"
+        || frame.sequence != expected.to_string()
+        || expected == 0
+        || frame.payload.len() > 128 * 1024
+    {
+        return Err(CHANNEL);
+    }
+    let provider = match frame.provider {
+        "kalshi" => Provider::Kalshi,
+        "coinbase" => Provider::Coinbase,
+        "kraken" => Provider::Kraken,
+        _ => return Err(CHANNEL),
+    };
+    Ok((provider, frame.payload))
+}
+fn observe_sources(
+    stream: &mut UnixStream,
+    session: &str,
+    stopped: &std::sync::atomic::AtomicBool,
+    memory: &crate::providers::memory::Memory,
+    mut dispatch: impl FnMut(crate::providers::Provider, &[u8]) -> Result<(), crate::providers::Failure>,
+) -> Result<(), &'static str> {
+    use std::sync::atomic::Ordering;
+    let mut sequence = 1u64;
+    while !stopped.load(Ordering::SeqCst) {
+        let mut poll = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut poll, 1, 50) };
+        if ready < 0 {
+            return Err(CHANNEL);
+        }
+        if ready == 0 {
+            continue;
+        }
+        let _charge = memory.reserve(640 * 1024).map_err(|_| CHANNEL)?;
+        let bytes = bounded_frame(stream, 256 * 1024)?;
+        let (provider, payload) = source_frame(&bytes, session, sequence)?;
+        if stopped.load(Ordering::SeqCst) {
+            return Err(CHANNEL);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        dispatch(provider, payload.as_bytes()).map_err(|_| CHANNEL)?;
+        if stopped.load(Ordering::SeqCst) {
+            return Err(CHANNEL);
+        }
+        stream
+            .set_write_timeout(Some(
+                deadline
+                    .checked_duration_since(Instant::now())
+                    .ok_or(CHANNEL)?,
+            ))
+            .map_err(|_| CHANNEL)?;
+        stream.write_all(&[1]).map_err(|_| CHANNEL)?;
+        sequence = sequence.checked_add(1).ok_or(CHANNEL)?;
+    }
+    Ok(())
+}
+struct SourceReceiverLifetime {
+    revocation: crate::providers::Revocation,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    failed: Arc<std::sync::atomic::AtomicBool>,
+}
+impl Drop for SourceReceiverLifetime {
+    fn drop(&mut self) {
+        if !self.stop.load(std::sync::atomic::Ordering::SeqCst) {
+            self.failed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.revocation.revoke();
+    }
+}
+pub(crate) struct SourceVerifier {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    failed: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl SourceVerifier {
+    pub fn start(mut stream: UnixStream, session: String, app: tauri::AppHandle) -> Self {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tauri::Manager;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let failed = Arc::new(AtomicBool::new(false));
+        let failure = failed.clone();
+        let memory = app
+            .state::<crate::Workspace>()
+            .source_transport
+            .memory()
+            .clone();
+        let lifetime = SourceReceiverLifetime {
+            revocation: app
+                .state::<crate::Workspace>()
+                .source_revocation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            stop: stop.clone(),
+            failed: failed.clone(),
+        };
+        let thread = std::thread::spawn(move || {
+            let _lifetime = lifetime;
+            let result = observe_sources(
+                &mut stream,
+                &session,
+                &stopped,
+                &memory,
+                |provider, payload| {
+                    let handle = app
+                        .state::<crate::Workspace>()
+                        .source_handle
+                        .lock()
+                        .map_err(|_| crate::providers::Failure::Unavailable)?
+                        .as_ref()
+                        .cloned()
+                        .ok_or(crate::providers::Failure::Stopped)?;
+                    handle.dispatch_fixture(provider, payload)
+                },
+            );
+            if result.is_err() {
+                failure.store(true, Ordering::SeqCst);
+                let _ = stream.set_write_timeout(Some(Duration::from_millis(10)));
+                let _ = stream.write_all(&[0]);
+            }
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        });
+        Self {
+            stop,
+            failed,
+            thread: Some(thread),
+        }
+    }
+    pub fn failed(&self) -> bool {
+        self.failed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub fn request_stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    pub fn stop(&mut self, deadline: tokio::time::Instant) -> bool {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        while self.thread.as_ref().is_some_and(|t| !t.is_finished())
+            && tokio::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if self.thread.as_ref().is_some_and(|t| !t.is_finished()) {
+            return false;
+        }
+        self.thread
+            .take()
+            .is_none_or(|thread| thread.join().is_ok())
+    }
+}
+
+#[cfg(test)]
+mod source_protocol_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn source_envelopes_are_exact_sequenced_and_mode_specific() {
+        let session = "0123456789abcdef0123456789abcdef";
+        let valid = json!({"session":session,"sequence":"1","kind":"provider_frame","provider":"kraken","payload":"{\"price\":68000.123456}"});
+        let bytes = serde_json::to_vec(&valid).unwrap();
+        let (provider, payload) = source_frame(&bytes, session, 1).unwrap();
+        assert_eq!(provider, crate::providers::Provider::Kraken);
+        assert_eq!(payload, "{\"price\":68000.123456}");
+        assert!(serde_json::from_slice::<Expectation>(&bytes).is_err());
+        assert!(source_frame(&bytes, "wrong", 1).is_err());
+        assert!(source_frame(&bytes, session, 2).is_err());
+        for (key, value) in [
+            ("sequence", json!(1)),
+            ("sequence", json!("01")),
+            ("sequence", json!("0")),
+            ("sequence", json!("18446744073709551616")),
+            ("kind", json!("expectation")),
+            ("provider", json!("brti")),
+            ("extra", json!(true)),
+            ("payload", json!("x".repeat(128 * 1024 + 1))),
+        ] {
+            let mut bad = valid.clone();
+            bad[key] = value;
+            assert!(
+                source_frame(&serde_json::to_vec(&bad).unwrap(), session, 1).is_err(),
+                "accepted {key}"
+            );
+        }
+        let mut maximum = valid.clone();
+        maximum["sequence"] = json!(u64::MAX.to_string());
+        assert!(source_frame(&serde_json::to_vec(&maximum).unwrap(), session, u64::MAX).is_ok());
+        assert!(source_frame(&vec![b' '; 256 * 1024 + 1], session, 1).is_err());
+        assert!(
+            source_frame(
+                br#"{"phase":"local-use","expected":"dummy","sequence":1}"#,
+                session,
+                1
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_receiver_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    fn packet(sequence: &str) -> Vec<u8> {
+        let bytes=serde_json::to_vec(&serde_json::json!({"session":"0123456789abcdef0123456789abcdef","sequence":sequence,"kind":"provider_frame","provider":"coinbase","payload":"not json"})).unwrap();
+        let mut framed = (bytes.len() as u32).to_be_bytes().to_vec();
+        framed.extend(bytes);
+        framed
+    }
+    #[test]
+    fn acknowledgment_waits_for_dispatch_and_duplicate_sequence_fails_without_redispatch() {
+        let (mut peer, mut receiver) = UnixStream::pair().unwrap();
+        let (entered, entry) = std::sync::mpsc::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let memory = crate::providers::memory::Memory::default();
+        let owned = memory.clone();
+        let thread = std::thread::spawn(move || {
+            observe_sources(
+                &mut receiver,
+                "0123456789abcdef0123456789abcdef",
+                &AtomicBool::new(false),
+                &owned,
+                |_, _| {
+                    entered.send(()).unwrap();
+                    gate.recv_timeout(Duration::from_secs(1)).unwrap();
+                    Ok(())
+                },
+            )
+        });
+        peer.write_all(&packet("1")).unwrap();
+        entry.recv_timeout(Duration::from_secs(1)).unwrap();
+        peer.set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        let mut ack = [0];
+        assert!(
+            peer.read_exact(&mut ack).is_err(),
+            "acknowledged before publication completed"
+        );
+        release.send(()).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        peer.read_exact(&mut ack).unwrap();
+        assert_eq!(ack, [1]);
+        peer.write_all(&packet("1")).unwrap();
+        assert!(thread.join().unwrap().is_err());
+        assert!(entry.try_recv().is_err());
+        assert_eq!(memory.used(), 0);
+    }
+    #[test]
+    fn quit_or_eof_during_dispatch_never_acknowledges_success() {
+        for quit in [false, true] {
+            let (mut peer, mut receiver) = UnixStream::pair().unwrap();
+            let (entered, entry) = std::sync::mpsc::channel();
+            let (release, gate) = std::sync::mpsc::channel();
+            let stop = Arc::new(AtomicBool::new(false));
+            let stopped = stop.clone();
+            let thread = std::thread::spawn(move || {
+                observe_sources(
+                    &mut receiver,
+                    "0123456789abcdef0123456789abcdef",
+                    &stopped,
+                    &crate::providers::memory::Memory::default(),
+                    |_, _| {
+                        entered.send(()).unwrap();
+                        gate.recv_timeout(Duration::from_secs(1)).unwrap();
+                        Ok(())
+                    },
+                )
+            });
+            peer.write_all(&packet("1")).unwrap();
+            entry.recv_timeout(Duration::from_secs(1)).unwrap();
+            if quit {
+                stop.store(true, Ordering::SeqCst);
+            } else {
+                peer.shutdown(std::net::Shutdown::Both).unwrap();
+            }
+            release.send(()).unwrap();
+            assert!(thread.join().unwrap().is_err());
+            let mut ack = [0];
+            assert!(peer.read_exact(&mut ack).is_err());
+        }
+    }
+    #[test]
+    fn source_framing_rejects_oversize_partial_and_total_read_deadline() {
+        for length in [0u32, 262145] {
+            let (mut peer, mut receiver) = UnixStream::pair().unwrap();
+            peer.write_all(&length.to_be_bytes()).unwrap();
+            assert!(bounded_frame(&mut receiver, 256 * 1024).is_err());
+        }
+        let (mut peer, mut receiver) = UnixStream::pair().unwrap();
+        peer.write_all(&[0, 0]).unwrap();
+        drop(peer);
+        assert!(bounded_frame(&mut receiver, 256 * 1024).is_err());
+        let (mut peer, mut receiver) = UnixStream::pair().unwrap();
+        peer.write_all(&10u32.to_be_bytes()).unwrap();
+        peer.write_all(b"half").unwrap();
+        let at = Instant::now();
+        assert!(bounded_frame(&mut receiver, 256 * 1024).is_err());
+        assert!(at.elapsed() < Duration::from_secs(3));
+    }
+    #[test]
+    fn late_dispatch_completion_is_not_acknowledged() {
+        let (mut peer, mut receiver) = UnixStream::pair().unwrap();
+        peer.write_all(&packet("1")).unwrap();
+        assert!(
+            observe_sources(
+                &mut receiver,
+                "0123456789abcdef0123456789abcdef",
+                &AtomicBool::new(false),
+                &crate::providers::memory::Memory::default(),
+                |_, _| {
+                    std::thread::sleep(Duration::from_millis(2050));
+                    Ok(())
+                }
+            )
+            .is_err()
+        );
+        peer.set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        let mut ack = [0];
+        assert!(peer.read_exact(&mut ack).is_err());
     }
 }

@@ -9,7 +9,7 @@ The accepted digital identity lives in [brand/README.md](brand/README.md). The f
 - [icon.svg](icon.svg) is the existing foundation icon source. The desktop bundle's [icon files](../src-tauri/icons/) are configured by [tauri.conf.json](../src-tauri/tauri.conf.json).
 - The brand [editable master](brand/source/metten-master.svg), [specifications](brand/specifications.json) and [guide](brand/brand-guide.pdf) define the delivered digital kit.
 - [SVG](brand/exports/svg/), [PNG](brand/exports/png/) and [PDF](brand/exports/pdf/) directories contain prepared variants; their role, palette, minimum sizes and provenance are documented in the brand README. All files in those directories belong to that static kit.
-- [font-source.json](brand/licenses/font-source.json), [Clash license](brand/licenses/Clash-Grotesk-FFL.txt) and [Inter license](brand/licenses/Inter-OFL.txt) record font provenance; font software is not bundled.
+- [font-source.json](brand/licenses/font-source.json), [Clash license](brand/licenses/Clash-Grotesk-FFL.txt) and [Inter license](brand/licenses/Inter-OFL.txt) record font provenance; the original static kit did not bundle font software. The product now bundles [Inter locally](fonts/README.md) for its interface.
 
 ## Invariants
 

@@ -43,3 +43,16 @@ python3 tests/check-staged.test.py
 ```
 
 The JavaScript entry-point checks require Node's `stripTypeScriptTypes`. Both Python checks require Python 3; the staged-helper check also needs Git, and the credential-runner check needs `swiftc`. Credential-runner compilation and child waits have explicit timeouts. These checks do not launch a browser or native application or access credentials.
+
+## Sources checks
+
+`sources.test.mjs` runs the actual entry point with controlled native replies and
+timers: active-only serial reads, disconnect/selection stale replies, immediate
+provider secret clearing, literal output, truthful unsupported data and revisions
+above 2^53. Existing session/strategy/dummy suites remain included by npm check.
+Native permission/command tests use the actual Tauri authority resolver and
+bounded decoders. Native source tests use the real coordinator/worker/decoder,
+zero-network read counts, fixture publication completion, scoped SID retirement
+and production-transport refusal. Receiver tests exercise real Unix sockets,
+framing/deadlines, duplicate sequence, dispatch-before-ack, EOF/Quit and late
+completion. Process-only runner checks remain separate from packaged execution.

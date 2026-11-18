@@ -19,3 +19,11 @@ export type StrategyResponse =
   | { kind: 'saved'; version: StrategySummary }
   | { kind: 'versions'; versions: StrategySummary[]; next_cursor: string | null }
   | { kind: 'detail'; version: StrategyDetail };
+
+export type SourceName = 'kalshi' | 'brti' | 'coinbase' | 'kraken';
+export type SourceRequest = { operation: 'snapshot' } | { operation: 'details' | 'connect' | 'disconnect'; source: SourceName } | { operation: 'inspect'; version_id: string };
+export interface SourceBinding { id: string; source: SourceName; field: string; unit: string; market_id: string | null; side: string | null; value: string | null; identity: string | null; provider_time_utc: string | null; age_ms: string | null; usable: boolean; history_ready: boolean; reason: string | null; capabilities: { current: string | null; observations: string | null; history: string | null } }
+export interface SourceCounters { provider: string; rest_attempts: string; handshake_attempts: string; control_writes: string; pong_flush_attempts: string; data_messages: string; slow_retry: boolean }
+export interface SourceSnapshot { kind: 'snapshot'; owner: string; revision: string; observed_at_utc_ms: string; environment: 'demo' | 'production'; current_market: string | null; markets: { market_id: string; open_ms: string; close_ms: string; verified: boolean; preparation: string }[]; sources: { source: SourceName; connection: string; enabled: boolean }[]; bindings: SourceBinding[]; counters?: SourceCounters[] }
+export type SourceResponse = SourceSnapshot | { kind: 'details'; source: SourceName; values: unknown[]; bindings?: SourceBinding[]; notice: string; counters?: SourceCounters[] } | { kind: 'requirements'; version_id: string; requirements: { input_id: string; source: string; instrument: string; field: string; unit: string; side: string | null; startup_ms: string; implicit: boolean }[] } | { kind: 'action'; source: SourceName; accepted: boolean };
+export type ProviderCredentialResponse = { kind: 'missing' } | { kind: 'saved'; key_id: string; key_type: string } | { kind: 'credential_changed'; operation: string };

@@ -1,13 +1,24 @@
 <!doctype html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Metten</title></head>
 <body><main>
-<header><p class="eyebrow">METTEN · FOUNDATION CHECK</p><h1>Controlled session</h1><p>No trading, market data, accounts, or real money.</p></header>
-<section aria-labelledby="now-title"><h2 id="now-title">Now</h2><p id="status" role="status">Opening saved workspace…</p><p id="clock">Test clock: —</p>
-<div class="controls"><button id="start" disabled>Start session</button><button id="pause" disabled>Pause now</button><button id="advance" disabled>Advance test clock +1 second</button></div>
-<p id="recording" role="status"></p><p id="error" role="alert"></p><p class="hint">The clock moves only when you advance it. Reopening always starts stopped.</p></section>
-<section aria-labelledby="sources-title"><h2 id="sources-title">Sources and settings</h2><p>Isolated dummy verification only. No exchange is connected. Credential actions are unavailable without the native verification runner.</p>
-<label for="credential-value">Dummy credential</label><input id="credential-value" type="password" autocomplete="off" spellcheck="false" maxlength="128">
-<div class="controls"><button id="credential-save">Save</button><button id="credential-replace">Replace</button><button id="credential-remove">Remove</button><button id="credential-check">Check local credential use</button></div><p id="credential-status" role="status">Local credential readability unchecked.</p></section>
+<header class="app-header"><img class="brand-lockup" src="/assets/brand/exports/svg/metten-a-lockup-primary.svg" alt="Metten" width="256" height="57"><p class="environment" id="source-environment">Checking source environment · Read-only</p></header>
+
+<section aria-labelledby="source-data-title"><h1 id="source-data-title">Sources</h1><p class="section-intro">Connect the exact sources your strategy names.</p>
+<details id="sources-panel" open><summary>Connections and received data</summary>
+<p class="source-notice">Connections start disconnected after reopening. Received values alone do not prove freshness, complete history or permission to use the data. Trading is unavailable.</p>
+<p id="source-markets">Current and next market not yet verified.</p><p id="source-status" role="status"></p>
+<div class="source-row"><div class="source-facts"><h2>Kalshi</h2><p id="source-kalshi-status">Disconnected</p></div><div class="controls source-controls"><button class="primary" id="source-kalshi-connect" aria-label="Connect Kalshi">Connect</button><button id="source-kalshi-disconnect" aria-label="Disconnect Kalshi">Disconnect</button><button class="text-button" id="source-kalshi-details" aria-label="View Kalshi details">Details</button></div></div>
+<div class="source-row"><div class="source-facts"><h2>BRTI</h2><p id="source-brti-status">Disconnected</p></div><div class="controls source-controls"><button class="primary" id="source-brti-connect" aria-label="Connect BRTI via Kalshi">Connect</button><button id="source-brti-disconnect" aria-label="Disconnect BRTI via Kalshi">Disconnect</button><button class="text-button" id="source-brti-details" aria-label="View BRTI via Kalshi details">Details</button></div></div>
+<div class="source-row"><div class="source-facts"><h2>Coinbase</h2><p id="source-coinbase-status">Disconnected</p></div><div class="controls source-controls"><button class="primary" id="source-coinbase-connect" aria-label="Connect Coinbase">Connect</button><button id="source-coinbase-disconnect" aria-label="Disconnect Coinbase">Disconnect</button><button class="text-button" id="source-coinbase-details" aria-label="View Coinbase details">Details</button></div></div>
+<div class="source-row"><div class="source-facts"><h2>Kraken</h2><p id="source-kraken-status">Disconnected</p></div><div class="controls source-controls"><button class="primary" id="source-kraken-connect" aria-label="Connect Kraken">Connect</button><button id="source-kraken-disconnect" aria-label="Disconnect Kraken">Disconnect</button><button class="text-button" id="source-kraken-details" aria-label="View Kraken details">Details</button></div></div>
+<pre id="source-details" aria-label="Source details"></pre>
+<details class="source-setting" id="provider-panel"><summary>Kalshi credentials</summary><p id="provider-environment">API credentials stay in Mac Keychain. Saving a key does not connect a source.</p>
+<label for="provider-key-id">Key ID</label><input id="provider-key-id" autocomplete="off" maxlength="128">
+<label for="provider-private-key">Private key (PEM, maximum 16 KiB)</label><textarea id="provider-private-key" rows="4" autocomplete="off" spellcheck="false"></textarea>
+<div class="controls"><button id="provider-status">Check credential status</button><button id="provider-save">Save Kalshi credential</button><button id="provider-replace">Replace Kalshi credential</button><button id="provider-remove">Remove Kalshi credential</button></div><p id="provider-status-text" role="status">Credential status not read.</p>
+</details><details class="source-setting"><summary>Check a strategy’s required sources</summary><label for="source-version">Saved strategy version</label><input id="source-version" inputmode="numeric" autocomplete="off"><button id="source-inspect">Inspect source requirements</button><pre id="source-requirements"></pre>
+</details><p class="source-limit">Opening and settlement references, historical coverage, account access and usage rights remain unproved.</p></details></section>
+
 <section aria-labelledby="strategy-title"><h2 id="strategy-title">Strategy versions</h2><p>Local rule preview and immutable history only. These rules do not run the controlled session or trade.</p>
 <label for="strategy-file">Choose a strategy JSON file (maximum 256 KiB)</label><input id="strategy-file" type="file" accept=".json,application/json">
 <label for="strategy-json">Strategy text</label><textarea id="strategy-json" rows="16" spellcheck="false"></textarea>
@@ -15,6 +26,10 @@
 <p id="strategy-status" role="status"></p><pre id="strategy-explanation" aria-label="Generated explanation"></pre>
 <button id="strategy-reload">Refresh saved versions</button><p id="strategy-list-status" role="status"></p><ol id="strategy-versions"></ol><button id="strategy-more" disabled>More versions</button>
 <pre id="strategy-detail" aria-label="Saved version details" role="status"></pre><button id="strategy-copy" disabled>Edit a copy</button></section>
-<section aria-labelledby="history-title"><h2 id="history-title">History</h2><p>Latest 100 saved records · timestamps in UTC · earlier records remain stored.</p><ol id="history"></ol></section>
+<section aria-labelledby="now-title"><h2 id="now-title">Controlled session</h2><p id="status" role="status">Opening saved workspace…</p><p id="clock">Test clock: —</p>
+<div class="controls"><button id="start" disabled>Start session</button><button id="pause" disabled>Pause now</button><button id="advance" disabled>Advance test clock +1 second</button></div>
+<p id="recording" role="status"></p><p id="error" role="alert"></p><p class="hint">The clock moves only when you advance it. Reopening always starts stopped.</p></section><section aria-labelledby="sources-title"><h2 id="sources-title">Isolated dummy verification</h2><p>Isolated dummy verification only. No exchange is connected. Credential actions are unavailable without the native verification runner.</p>
+<label for="credential-value">Dummy credential</label><input id="credential-value" type="password" autocomplete="off" spellcheck="false" maxlength="128">
+<div class="controls"><button id="credential-save">Save</button><button id="credential-replace">Replace</button><button id="credential-remove">Remove</button><button id="credential-check">Check local credential use</button></div><p id="credential-status" role="status">Local credential readability unchecked.</p></section><section aria-labelledby="history-title"><h2 id="history-title">History</h2><p>Latest 100 saved records · timestamps in UTC · earlier records remain stored.</p><ol id="history"></ol></section>
 <details><summary>Recording details</summary><p id="settings">Checking writer settings…</p></details>
 </main><script type="module" src="/src/main.ts"></script></body></html>

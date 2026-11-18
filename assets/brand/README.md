@@ -10,3 +10,5 @@ This is the accepted Metten digital identity v1.0. The editable master is [sourc
 The original round-31 digital kit supplies the master, exports, guide, specifications, and license records here. The logo lettering is outlined from Clash Grotesk Bold; the font software is not included. The [font source record](licenses/font-source.json), [Clash license](licenses/Clash-Grotesk-FFL.txt), and [Inter license](licenses/Inter-OFL.txt) are provided for provenance. Inter font software is not included here. These records do not establish trademark clearance or expand the project's software license.
 
 The kit's prior verification covered digital renders and editing; physical device, print, and platform-specific use remain unverified. Earlier explorations and illustrative mockups are not current artwork.
+
+Product integration now references the unchanged primary SVG lockup and the palette/typography specifications. The runtime Inter file and its own pinned upstream license/provenance are maintained separately in [assets/fonts](../fonts/README.md); the original static-kit archive is unchanged.

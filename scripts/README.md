@@ -96,3 +96,7 @@ Row assertions therefore normalize whitespace and match complete token sequences
 retaining exact price/unit/identity boundaries rather than relying on visual
 lines or unrestricted substrings. The process regression includes the captured
 controlled-row shape and rejects price, precision, unit and identity collisions.
+
+## Headless controlled paper walkthrough
+
+`python3 scripts/verify-paper.py <built-Metten.app>` resolves CFBundleExecutable from bundle metadata and requires the `metten-paper-check-v1` marker before launching. It creates only its own 0700 workspace, invokes the exact executable with `--paper-check`, bounds output to 64 KiB and validates protocol plus schema/cash/fees/settlement/finite-zero SQLite receipts after confirmed process exit. A 30-second deadline sends private STOP, then waits five seconds; an unconfirmed exit preserves the owned workspace and process identity/handle. It never kills an application or deletes a live owner's resources. Successful/confirmed-failed children are reaped, streams closed and only the original owned directory removed. No credentials, GUI automation or network is involved. Process tests: `python3 tests/paper-runner.test.py`.

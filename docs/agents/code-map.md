@@ -1,6 +1,6 @@
 # Agent code map
 
-Use this map to find a change's entry point, connected boundaries and existing tests. It includes issue #4 and the controlled synchronous source boundary in issue #5 step 2; issue #5 now includes native read-only adapters; step-5 command/UI integration is present; paper/live trading and release qualification remain future work. Component contracts hold detailed behavior; this map is a navigation aid.
+Use this map to find a change's entry point, connected boundaries and existing tests. It includes issue #4 and the controlled synchronous source boundary in issue #5 step 2; issue #5 now includes native read-only adapters; step-5 command/UI integration is present; the controlled paper lifecycle is present; production financial integration, live trading and release qualification remain future work. Component contracts hold detailed behavior; this map is a navigation aid.
 
 ## Start with the task
 
@@ -75,3 +75,10 @@ Private source verification → `credential.rs:read_bootstrap/SourceVerifier/obs
 `providers/tests.rs` exercises actual decoders, source-state transitions, coordinator publication, read-only transport, cancellation, invalidation and joined shutdown. Public `crates/engine/tests/sources.rs` exercises evidence identity and lifecycle meaning through the engine interface. The small intake notification tests cover ordinary arrivals and a consumed park token.
 
 `SourceWorker::refresh_tickers` reads borrowed `SourceState::market_ids`; public source retirement/registration checks retain its functional coverage. There is no native capacity harness, collector, counting allocator or probe callback. Owner deleted those tools rather than carrying them into the issue 5/6 prototype. Issue 16 owns any later performance work; [historical evidence](../verification/issue-5.md#current-evidence-index) records the failed qualification without claiming a supported envelope.
+
+
+## Controlled paper lifecycle
+
+Paper controls → `src/main.ts:paperAction/readPaper` → strict native `src-tauri/src/paper.rs:decode/dispatch` and owned `NativePaper/Driver` → `Engine::paper_*` worker → `paper.rs:Owner/Run` → existing `SourceState` and `Evaluator` → `storage.rs:paper_*` transactional intent/outcome/settlement → bounded receipts/evidence → `src/view.ts:paperReceipt/paperWitness`. The [engine contract](../../crates/engine/src/README.md#controlled-paper-lifecycle-issue-6), [native contract](../../src-tauri/src/README.md#controlled-paper-command-and-playback) and [paper guide](../strategies/paper.md) own the details.
+
+`strategy.rs:AskWitness/RuleWitness/ConditionSample/witness_step` is the exact evaluation evidence path; it does not reevaluate for presentation. `tests/paper.rs` exercises the public engine with real SQLite; `paper_storage.rs` covers migration/constraints; `tests/paper.test.mjs` covers frontend precision/races/focus/evidence; native `paper::tests` and permission tests cover decoding/playback/headless entry. `scripts/verify-paper.py` invokes the packaged `--paper-check` protocol; `tests/paper-runner.test.py` covers process ownership. [Issue-6 evidence](../verification/issue-6.md) distinguishes those checks from renderer/GUI/live claims.

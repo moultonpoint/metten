@@ -70,7 +70,7 @@ fn rule_error(path: &str, code: &'static str) -> RuleError {
         }.into(),
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleUnit {
     ContractCents,
@@ -466,6 +466,7 @@ impl ImplicitAsk {
 
 #[derive(Clone, Copy, Debug)]
 struct NumericInfo {
+    unit: RuleUnit,
     dependencies: u32,
     horizons: [u64; 32],
     market: bool,
@@ -766,6 +767,7 @@ impl ValidatedStrategy {
             numeric_info.insert(
                 input.id.clone(),
                 NumericInfo {
+                    unit: input.unit,
                     dependencies: 1u32 << i,
                     horizons: [0; 32],
                     market: input.instrument != "btc_usd",
@@ -776,6 +778,7 @@ impl ValidatedStrategy {
         for &i in &order {
             let m = &document.measurements[i];
             let mut info = NumericInfo {
+                unit: resolved[&m.id].0,
                 dependencies: 0,
                 horizons: [0; 32],
                 market: false,
@@ -1720,11 +1723,20 @@ pub struct ObjectiveView {
     pub safeguards: Safeguards,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AskWitness {
+    pub binding_id: u32,
+    pub price: Decimal,
+    pub value_transaction: u64,
+    pub observation_number: u64,
+    pub valid_until_ms: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     pub market_id: String,
     pub option_id: String,
     pub side: Side,
     pub remaining_quantity: u64,
+    pub ask: AskWitness,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckpointSnapshot {
@@ -1736,6 +1748,9 @@ pub struct CheckpointSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeafResult {
     pub option_id: String,
+    pub qualified_side: Option<Side>,
+    pub purchase_block: Option<&'static str>,
+    pub purchase_price: Option<Decimal>,
     pub eligible: bool,
     pub reason: &'static str,
 }
@@ -1746,6 +1761,52 @@ pub struct HistoryProgress {
     pub required_ms: u64,
     pub collected_ms: u64,
 }
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct RuleWitness {
+    pub path: String,
+    pub parent_path: Option<String>,
+    pub root_path: String,
+    pub root_kind: &'static str,
+    pub root_status: &'static str,
+    pub option_id: Option<String>,
+    pub checkpoint_id: Option<String>,
+    pub side: Option<Side>,
+    pub kind: &'static str,
+    pub status: &'static str,
+    pub interval_state: &'static str,
+    pub interval_start_seconds: String,
+    pub interval_end_seconds: String,
+    pub blocked_by_checkpoint: Option<String>,
+    pub left_reference: Option<String>,
+    pub right_reference: Option<String>,
+    pub observed: Option<String>,
+    pub required: Option<String>,
+    pub comparison: Option<&'static str>,
+    pub unit: Option<RuleUnit>,
+    pub binding_id: Option<u32>,
+    pub value_transaction: Option<String>,
+    pub observation_number: Option<String>,
+    pub right_binding_id: Option<u32>,
+    pub right_value_transaction: Option<String>,
+    pub right_observation_number: Option<String>,
+    pub evaluated_at_ms: String,
+    pub transaction: String,
+}
+#[derive(Clone, Copy, Debug)]
+struct ValueIdentity {
+    binding_id: u32,
+    value_transaction: u64,
+    number: u64,
+}
+#[derive(Clone, Copy, Debug)]
+struct ConditionSample {
+    left: Option<i128>,
+    right: Option<i128>,
+    left_identity: Option<ValueIdentity>,
+    right_identity: Option<ValueIdentity>,
+    at_ms: u64,
+    transaction: u64,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Decision {
     pub phase: &'static str,
@@ -1753,9 +1814,11 @@ pub struct Decision {
     pub evaluated_through_ms: u64,
     pub checkpoints: std::collections::BTreeMap<String, CheckpointSnapshot>,
     pub leaves: Vec<LeafResult>,
-    pub candidate: Option<Candidate>,
+    pub candidate: Option<Box<Candidate>>,
     pub reasons: Vec<RuleError>,
     pub repeated_waits: u64,
+    pub witnesses: Vec<RuleWitness>,
+    pub more_evidence: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SliceControl {
@@ -1800,6 +1863,7 @@ struct RawState {
     valid_until: u64,
     last_observed_value: Option<i128>,
     observed_transaction: u64,
+    value_transaction: u64,
     covered_previous: bool,
     cell_covered: bool,
     covered_cells: u64,
@@ -2118,6 +2182,7 @@ impl Decision {
             }
         } else if self.progress.pop().is_some()
             || self.leaves.pop().is_some()
+            || self.witnesses.pop().is_some()
             || self.reasons.pop().is_some()
             || self.candidate.take().is_some()
         {
@@ -2135,6 +2200,20 @@ struct DecisionCursor {
     stage: u8,
     index: usize,
     unchanged: bool,
+    primary_leaf: Option<usize>,
+    primary_unavailable_leaf: Option<usize>,
+    primary_emitted: bool,
+    primary_initialized: bool,
+    primary_ready: bool,
+    primary_node: usize,
+    primary_side: Option<Side>,
+    primary_search: usize,
+    primary_candidate: Option<usize>,
+    primary_parent: Option<String>,
+    witness_plan: usize,
+    witness_node: usize,
+    witness_step: usize,
+    witness_side: usize,
 }
 impl DecisionCursor {
     fn new(phase: &'static str) -> Self {
@@ -2148,6 +2227,8 @@ impl DecisionCursor {
             candidate: None,
             reasons: vec![],
             repeated_waits: 0,
+            witnesses: Vec::new(),
+            more_evidence: false,
         };
         Self {
             publication: result.clone(),
@@ -2155,6 +2236,20 @@ impl DecisionCursor {
             stage: 0,
             index: 0,
             unchanged: true,
+            primary_leaf: None,
+            primary_unavailable_leaf: None,
+            primary_emitted: false,
+            primary_initialized: false,
+            primary_ready: false,
+            primary_node: 0,
+            primary_side: None,
+            primary_search: 0,
+            primary_candidate: None,
+            primary_parent: None,
+            witness_plan: 0,
+            witness_node: 0,
+            witness_step: 0,
+            witness_side: 0,
         }
     }
     fn reason(&mut self, reason: RuleError, old: &Decision) {
@@ -2400,6 +2495,31 @@ fn tree_bytes<K, V>(entries: usize) -> usize {
         .filter(|bytes| *bytes <= RESERVE)
         .unwrap_or(RESERVE + 1)
 }
+impl HeapBytes for RuleWitness {
+    fn heap_bytes(&self) -> usize {
+        fixed_work(18);
+        sum_bytes([
+            self.path.heap_bytes(),
+            self.parent_path.heap_bytes(),
+            self.root_path.heap_bytes(),
+            self.option_id.heap_bytes(),
+            self.checkpoint_id.heap_bytes(),
+            self.interval_start_seconds.heap_bytes(),
+            self.interval_end_seconds.heap_bytes(),
+            self.blocked_by_checkpoint.heap_bytes(),
+            self.left_reference.heap_bytes(),
+            self.right_reference.heap_bytes(),
+            self.observed.heap_bytes(),
+            self.required.heap_bytes(),
+            self.value_transaction.heap_bytes(),
+            self.observation_number.heap_bytes(),
+            self.right_value_transaction.heap_bytes(),
+            self.right_observation_number.heap_bytes(),
+            self.evaluated_at_ms.heap_bytes(),
+            self.transaction.heap_bytes(),
+        ])
+    }
+}
 impl HeapBytes for String {
     fn heap_bytes(&self) -> usize {
         self.capacity()
@@ -2574,6 +2694,7 @@ pub struct Evaluator {
     last_objective: Option<ObjectiveView>,
     truths: std::collections::BTreeMap<(String, usize), Truth>,
     continuities: std::collections::BTreeMap<(String, usize), bool>,
+    samples: std::collections::BTreeMap<(String, usize), ConditionSample>,
     condition_plans: Vec<ConditionPlan>,
     leaf_plans: Vec<LeafPlan>,
     #[cfg(test)]
@@ -2626,11 +2747,14 @@ impl Evaluator {
                 candidate: None,
                 reasons: Vec::new(),
                 repeated_waits: 0,
+                witnesses: Vec::new(),
+                more_evidence: false,
             },
             retired: None,
             last_objective: None,
             truths: Default::default(),
             continuities: Default::default(),
+            samples: Default::default(),
             condition_plans,
             leaf_plans,
             #[cfg(test)]
@@ -2742,7 +2866,8 @@ impl Evaluator {
             tree_bytes::<(String, usize), Temporal>(states),
             tree_bytes::<(String, usize), Truth>(states),
             tree_bytes::<(String, usize), bool>(states),
-            3 * path_bytes,
+            tree_bytes::<(String, usize), ConditionSample>(states),
+            4 * path_bytes,
             2 * tree_bytes::<u32, u8>(128),
         ]);
         let checkpoints = sum_bytes([
@@ -2760,7 +2885,10 @@ impl Evaluator {
             leaf_names,
             capacity_bytes::<RuleError>(2 * (leaves + 128).max(4)),
             (leaves + 128) * 256,
-            128 + leaf_id,
+            128 + leaf_id + std::mem::size_of::<Candidate>(),
+            capacity_bytes::<RuleWitness>(32),
+            21 * 4096,
+            8192,
         ]);
         sum_bytes([
             std::mem::size_of::<Self>(),
@@ -3281,6 +3409,10 @@ impl Evaluator {
                             if self.continuities.pop_first().is_some() {
                                 continue;
                             }
+                            tree_work(self.samples.len(), true);
+                            if self.samples.pop_first().is_some() {
+                                continue;
+                            }
                         }
                         self.apply(change, t.number)?;
                         if let Some(id) = change_binding(change) {
@@ -3578,6 +3710,7 @@ impl Evaluator {
                     r.number = *observation_number;
                     r.last_observed_value = Some(value.0);
                     r.observed_transaction = transaction;
+                    r.value_transaction = transaction;
                     r.value = Some(value.0);
                 }
             }
@@ -3596,6 +3729,7 @@ impl Evaluator {
                 } else {
                     Some(value.0)
                 };
+                r.value_transaction = transaction;
                 if r.value.is_none() {
                     r.bad_cell = true;
                 }
@@ -3634,6 +3768,7 @@ impl Evaluator {
                     self.temporal.clear();
                     self.truths.clear();
                     self.continuities.clear();
+                    self.samples.clear();
                     self.last_objective = None;
                 }
             }
@@ -3680,6 +3815,17 @@ impl Evaluator {
             series.previous = None;
         }
     }
+    fn raw_state(&self, id: &str, market: Option<&str>, side: Side) -> Option<&RawState> {
+        fixed_work(1);
+        self.raw.iter().inspect(inspect_entry).find(|r| {
+            r.descriptor.input_id == id
+                && scope_market(&r.descriptor.scope).is_none_or(|m| Some(m) == market)
+                && match r.descriptor.scope {
+                    BindingScope::Contract { side: s, .. } => !r.selected || s == side,
+                    _ => true,
+                }
+        })
+    }
     fn raw_value(
         &self,
         id: &str,
@@ -3689,14 +3835,7 @@ impl Evaluator {
         _batch: &AdvanceBatch,
     ) -> Option<i128> {
         fixed_work(1);
-        let r = self.raw.iter().inspect(inspect_entry).find(|r| {
-            r.descriptor.input_id == id
-                && scope_market(&r.descriptor.scope).is_none_or(|m| Some(m) == market)
-                && match r.descriptor.scope {
-                    BindingScope::Contract { side: s, .. } => !r.selected || s == side,
-                    _ => true,
-                }
-        })?;
+        let r = self.raw_state(id, market, side)?;
         if r.valid_until <= self.frontier {
             return None;
         }
@@ -3870,6 +4009,57 @@ impl Evaluator {
     ) -> Truth {
         fixed_work(1);
         let result = self.predicate_eval(c, path, side, transaction, batch);
+        if !matches!(
+            c,
+            Predicate::Compare { .. }
+                | Predicate::CrossedBelow { .. }
+                | Predicate::CrossedAbove { .. }
+        ) {
+            tree_work(self.samples.len(), true);
+            vector_copy_work(2 * path.len());
+            tree_work(self.temporal.len(), false);
+            let temporal = self
+                .temporal
+                .get(&(path.into(), if side == Side::Yes { 0 } else { 1 }));
+            let (observed, required) = match c {
+                Predicate::HeldFor {
+                    duration_seconds, ..
+                } => (
+                    temporal.map(|state| {
+                        i128::from(state.since.map_or(0, |since| self.frontier - since)) * 1000
+                    }),
+                    Some(i128::from(*duration_seconds) * SCALE),
+                ),
+                Predicate::ConfirmedUpdates { count, .. } => (
+                    temporal.map(|state| i128::from(state.count) * SCALE),
+                    Some(i128::from(*count) * SCALE),
+                ),
+                _ => (None, None),
+            };
+            let counting_identity = match c {
+                Predicate::ConfirmedUpdates { count_input, .. }
+                | Predicate::AfterCheckpointUpdate { count_input, .. } => self
+                    .raw_state(count_input, self.market.as_deref(), side)
+                    .map(|raw| ValueIdentity {
+                        binding_id: raw.descriptor.binding_id,
+                        value_transaction: raw.value_transaction,
+                        number: raw.number,
+                    }),
+                _ => None,
+            };
+            self.samples.insert(
+                (path.into(), if side == Side::Yes { 0 } else { 1 }),
+                ConditionSample {
+                    left: observed,
+                    right: required,
+                    left_identity: counting_identity,
+                    right_identity: None,
+                    at_ms: self.frontier,
+                    transaction: transaction.map_or(self.last_transaction, |t| t.number),
+                },
+            );
+        }
+
         tree_work(self.continuities.len(), true);
         self.continuities.insert(
             (path.to_owned(), if side == Side::Yes { 0 } else { 1 }),
@@ -3970,20 +4160,53 @@ impl Evaluator {
                 left,
                 comparison,
                 right,
-            } => values(left, right).map_or(Truth::Unavailable, |(a, b)| {
-                truth(match comparison {
-                    ComparisonOp::LessThan => a < b,
-                    ComparisonOp::AtMost => a <= b,
-                    ComparisonOp::EqualTo => a == b,
-                    ComparisonOp::AtLeast => a >= b,
-                    ComparisonOp::GreaterThan => a > b,
+            } => {
+                let a = self.value(left, market.as_deref(), side, false, false, batch);
+                let b = self.value(right, market.as_deref(), side, false, false, batch);
+                let left_identity = self.value_identity(left, side);
+                let right_identity = self.value_identity(right, side);
+                tree_work(self.samples.len(), true);
+                self.samples.insert(
+                    key,
+                    ConditionSample {
+                        left: a,
+                        right: b,
+                        left_identity,
+                        right_identity,
+                        at_ms: self.frontier,
+                        transaction: transaction.map_or(self.last_transaction, |t| t.number),
+                    },
+                );
+                a.zip(b).map_or(Truth::Unavailable, |(a, b)| {
+                    truth(match comparison {
+                        ComparisonOp::LessThan => a < b,
+                        ComparisonOp::AtMost => a <= b,
+                        ComparisonOp::EqualTo => a == b,
+                        ComparisonOp::AtLeast => a >= b,
+                        ComparisonOp::GreaterThan => a > b,
+                    })
                 })
-            }),
+            }
             Predicate::All { .. } | Predicate::Any { .. } => {
                 unreachable!("Boolean children are processed by the condition continuation")
             }
             Predicate::CrossedBelow { left, right } | Predicate::CrossedAbove { left, right } => {
                 let pair = values(left, right);
+                let left_identity = self.value_identity(left, side);
+                let right_identity = self.value_identity(right, side);
+                tree_work(self.samples.len(), true);
+                vector_copy_work(path.len());
+                self.samples.insert(
+                    key.clone(),
+                    ConditionSample {
+                        left: pair.map(|p| p.0),
+                        right: pair.map(|p| p.1),
+                        left_identity,
+                        right_identity,
+                        at_ms: self.frontier,
+                        transaction: transaction.map_or(self.last_transaction, |t| t.number),
+                    },
+                );
                 let continuous = self.value_continuous(left, self.market.as_deref(), side)
                     && self.value_continuous(right, self.market.as_deref(), side);
                 let dependencies = [left, right].into_iter().fold(0, |mask, value| {
@@ -4269,6 +4492,19 @@ impl Evaluator {
                     tree_work(self.truths.len(), true);
                     tree_work(self.continuities.len(), true);
                     self.truths.insert(key.clone(), *truth);
+                    tree_work(self.samples.len(), true);
+                    vector_copy_work(path.len());
+                    self.samples.insert(
+                        key.clone(),
+                        ConditionSample {
+                            left: None,
+                            right: None,
+                            left_identity: None,
+                            right_identity: None,
+                            at_ms: self.frontier,
+                            transaction: transaction.map_or(self.last_transaction, |t| t.number),
+                        },
+                    );
                     self.continuities.insert(key, *continuous);
                     cursor.aggregate = None;
                     cursor.child = 0;
@@ -4340,6 +4576,7 @@ impl Evaluator {
         match out.stage {
             0 => {
                 if let Some(plan) = self.leaf_plans.get(out.index) {
+                    let prior_candidate = out.result.candidate.is_some();
                     self.choose(
                         &plan.leaf,
                         &plan.ancestors,
@@ -4348,6 +4585,25 @@ impl Evaluator {
                         &mut out.result.leaves,
                         &mut out.result.candidate,
                     );
+                    if out.primary_unavailable_leaf.is_none()
+                        && out
+                            .result
+                            .leaves
+                            .last()
+                            .is_some_and(|leaf| leaf.reason == "unavailable")
+                    {
+                        out.primary_unavailable_leaf = Some(out.index);
+                    }
+                    if !prior_candidate && out.result.candidate.is_some()
+                        || out.primary_leaf.is_none()
+                            && out
+                                .result
+                                .leaves
+                                .last()
+                                .is_some_and(|l| l.qualified_side.is_some())
+                    {
+                        out.primary_leaf = Some(out.index);
+                    }
                     vector_growth(&out.publication.leaves);
                     out.publication
                         .leaves
@@ -4433,6 +4689,11 @@ impl Evaluator {
                     return false;
                 }
             }
+            5 => {
+                if !self.witness_step(out) {
+                    return false;
+                }
+            }
             _ => {
                 out.unchanged &= self.published.reasons.len() == out.result.reasons.len()
                     && self.published.checkpoints.len() == out.result.checkpoints.len();
@@ -4459,7 +4720,7 @@ impl Evaluator {
         objective: Option<&ObjectiveView>,
         batch: &AdvanceBatch,
         leaves: &mut Vec<LeafResult>,
-        candidate: &mut Option<Candidate>,
+        candidate: &mut Option<Box<Candidate>>,
     ) {
         fixed_work(1);
         let market_elapsed = self.market.as_ref().and_then(|id| {
@@ -4547,7 +4808,10 @@ impl Evaluator {
             }
         }
         let mut eligible = false;
+        let mut purchase_block = None;
+        let mut purchase_price = None;
         if let Some(s) = side {
+            purchase_block = Some("objective_blocked");
             reason = "objective_blocked";
             if let Some(objective) = objective
                 && self.objective_valid(objective)
@@ -4583,26 +4847,46 @@ impl Evaluator {
                     } else {
                         "__buyable_ask_no"
                     });
-                if let Some(ask) = self.raw_value(ask_id, self.market.as_deref(), s, false, batch)
+                let raw = self.raw_state(ask_id, self.market.as_deref(), s);
+                purchase_price = raw
+                    .filter(|raw| raw.valid_until > self.frontier)
+                    .and_then(|raw| raw.value)
+                    .map(Decimal);
+                purchase_block = Some(if purchase_price.is_some() {
+                    "price"
+                } else {
+                    "unavailable_evidence"
+                });
+                if let Some(raw) = raw
+                    && raw.valid_until > self.frontier
+                    && let Some(ask) = raw.value
                     && range.minimum.0 >= 0
                     && range.maximum.0 <= 100 * SCALE
                     && range.minimum.0 <= ask
                     && ask <= range.maximum.0
                 {
                     eligible = true;
+                    purchase_block = None;
                     reason = if candidate.is_some() {
                         "lower_priority"
                     } else {
                         "eligible"
                     };
                     if candidate.is_none() {
-                        *candidate = Some(Candidate {
+                        *candidate = Some(Box::new(Candidate {
                             market_id: objective.market_id.clone(),
                             option_id: o.id.clone(),
                             side: s,
                             remaining_quantity: objective.requested_quantity
                                 - objective.confirmed_quantity,
-                        });
+                            ask: AskWitness {
+                                binding_id: raw.descriptor.binding_id,
+                                price: Decimal(ask),
+                                value_transaction: raw.value_transaction,
+                                observation_number: raw.number,
+                                valid_until_ms: raw.valid_until,
+                            },
+                        }));
                     }
                 }
             }
@@ -4610,6 +4894,9 @@ impl Evaluator {
         vector_growth(leaves);
         leaves.push(LeafResult {
             option_id: o.id.clone(),
+            qualified_side: side,
+            purchase_block,
+            purchase_price,
             eligible,
             reason,
         });
@@ -4801,6 +5088,7 @@ fn add_binding_to(
         valid_until: 0,
         last_observed_value: None,
         observed_transaction: 0,
+        value_transaction: 0,
         covered_previous: false,
         cell_covered: false,
         covered_cells: 0,
@@ -7530,5 +7818,355 @@ mod controlled_failure_tests {
             .code,
             "internal_evaluation_failure"
         );
+    }
+}
+
+impl Evaluator {
+    fn value_identity(&self, value: &ValueSpec, side: Side) -> Option<ValueIdentity> {
+        fixed_work(1);
+        let ValueSpec::Reference { reference } = value else {
+            return None;
+        };
+        let raw = self.raw_state(reference, self.market.as_deref(), side)?;
+        Some(ValueIdentity {
+            binding_id: raw.descriptor.binding_id,
+            value_transaction: raw.value_transaction,
+            number: raw.number,
+        })
+    }
+    fn witness_truth(&self, path: &str, side: Option<Side>) -> Truth {
+        vector_copy_work(path.len());
+        tree_work(self.truths.len(), false);
+        self.truths
+            .get(&(path.to_string(), if side == Some(Side::No) { 1 } else { 0 }))
+            .copied()
+            .unwrap_or(Truth::Unavailable)
+    }
+    fn witness_step(&self, out: &mut DecisionCursor) -> bool {
+        fixed_work(1);
+        if !out.primary_emitted {
+            let leaf = out
+                .primary_leaf
+                .or(out.primary_unavailable_leaf)
+                .unwrap_or(0);
+            let plan_index = self.strategy.document.checkpoints.len() + leaf;
+            let plan = &self.condition_plans[plan_index];
+            if !out.primary_initialized {
+                let mut side = out
+                    .result
+                    .leaves
+                    .get(leaf)
+                    .and_then(|l| l.qualified_side)
+                    .or_else(|| plan.selector.as_ref().and_then(|s| self.selected(s)));
+                if matches!(plan.selector, Some(Selector::UniqueSide)) && side.is_none() {
+                    side = Some(
+                        [Side::Yes, Side::No]
+                            .into_iter()
+                            .find(|side| {
+                                plan.nodes.iter().inspect(inspect_entry).any(|n| {
+                                    self.witness_truth(&n.path, Some(*side)) == Truth::Unavailable
+                                })
+                            })
+                            .unwrap_or(Side::Yes),
+                    );
+                }
+                out.primary_side = side;
+                out.primary_node = plan
+                    .nodes
+                    .iter()
+                    .inspect(inspect_entry)
+                    .position(|n| {
+                        !self.in_window(n.during)
+                            || self.witness_truth(&n.path, side) != Truth::True
+                    })
+                    .unwrap_or(plan.nodes.len() - 1);
+                let node = &plan.nodes[out.primary_node];
+                out.primary_initialized = true;
+                if !matches!(
+                    node.steps.last().unwrap().0,
+                    Predicate::All { .. } | Predicate::Any { .. }
+                ) || side.is_none()
+                {
+                    out.primary_candidate = Some(node.steps.len() - 1);
+                    out.primary_ready = true;
+                }
+                return false;
+            }
+            let node = &plan.nodes[out.primary_node];
+            let target = self.witness_truth(&node.path, out.primary_side);
+            if !out.primary_ready {
+                if let Some(parent) = out.primary_parent.as_ref() {
+                    if self.witness_truth(parent, out.primary_side) != target {
+                        out.primary_parent = None;
+                        out.primary_candidate = None;
+                        out.primary_search += 1;
+                    } else if *parent == node.path {
+                        out.primary_parent = None;
+                        out.primary_ready = true;
+                    } else {
+                        vector_copy_work(parent.len());
+                        out.primary_parent = parent.rsplit_once('.').map(|(p, _)| p.to_string());
+                    }
+                    return false;
+                }
+                if let Some((predicate, path)) = node.steps.get(out.primary_search) {
+                    if !matches!(predicate, Predicate::All { .. } | Predicate::Any { .. })
+                        && self.witness_truth(path, out.primary_side) == target
+                    {
+                        out.primary_candidate = Some(out.primary_search);
+                        vector_copy_work(path.len());
+                        out.primary_parent = path.rsplit_once('.').map(|(p, _)| p.to_string());
+                    } else {
+                        out.primary_search += 1;
+                    }
+                } else {
+                    out.primary_candidate = Some(node.steps.len() - 1);
+                    out.primary_ready = true;
+                }
+                return false;
+            }
+            let (predicate, path) = &node.steps[out.primary_candidate.unwrap()];
+            self.push_witness(
+                out,
+                self.make_witness(plan_index, node, predicate, path, out.primary_side),
+            );
+            out.primary_emitted = true;
+            return false;
+        }
+        let Some(plan) = self.condition_plans.get(out.witness_plan) else {
+            return true;
+        };
+        let Some(node) = plan.nodes.get(out.witness_node) else {
+            out.witness_plan += 1;
+            out.witness_node = 0;
+            out.witness_step = 0;
+            out.witness_side = 0;
+            return false;
+        };
+        if out.witness_step >= node.steps.len() {
+            out.witness_node += 1;
+            out.witness_step = 0;
+            out.witness_side = 0;
+            return false;
+        }
+        let index = if out.witness_step == 0 {
+            node.steps.len() - 1
+        } else {
+            out.witness_step - 1
+        };
+        let (predicate, path) = &node.steps[index];
+        let side = if matches!(plan.selector, Some(Selector::UniqueSide)) {
+            Some(if out.witness_side == 0 {
+                Side::Yes
+            } else {
+                Side::No
+            })
+        } else {
+            plan.selector.as_ref().and_then(|s| self.selected(s))
+        };
+        out.witness_side += 1;
+        if out.witness_side
+            >= if matches!(plan.selector, Some(Selector::UniqueSide)) {
+                2
+            } else {
+                1
+            }
+        {
+            out.witness_side = 0;
+            out.witness_step += 1;
+        }
+        if out
+            .result
+            .witnesses
+            .first()
+            .is_some_and(|w| w.path == *path && w.side == side)
+        {
+            return false;
+        }
+        if out.result.witnesses.len() == 21 {
+            out.result.more_evidence = true;
+            out.publication.more_evidence = true;
+            return true;
+        }
+        self.push_witness(
+            out,
+            self.make_witness(out.witness_plan, node, predicate, path, side),
+        );
+        false
+    }
+    fn push_witness(&self, out: &mut DecisionCursor, witness: RuleWitness) {
+        fixed_work(1);
+        vector_growth(&out.result.witnesses);
+        vector_growth(&out.publication.witnesses);
+        vector_copy_work(witness.heap_bytes());
+        out.publication.witnesses.push(witness.clone());
+        out.result.witnesses.push(witness);
+    }
+    fn make_witness(
+        &self,
+        plan_index: usize,
+        node: &ConditionNode,
+        predicate: &Predicate,
+        path: &str,
+        side: Option<Side>,
+    ) -> RuleWitness {
+        fixed_work(1);
+        let plan = &self.condition_plans[plan_index];
+        let root = &node.steps.last().unwrap().0;
+        let kind = |p: &Predicate| match p {
+            Predicate::Compare { .. } => "compare",
+            Predicate::All { .. } => "all",
+            Predicate::Any { .. } => "any",
+            Predicate::HeldFor { .. } => "held_for",
+            Predicate::ConfirmedUpdates { .. } => "confirmed_updates",
+            Predicate::CheckpointReached { .. } => "checkpoint_reached",
+            Predicate::AfterCheckpointUpdate { .. } => "after_checkpoint_update",
+            Predicate::CrossedBelow { .. } => "crossed_below",
+            Predicate::CrossedAbove { .. } => "crossed_above",
+        };
+        let status = |truth| match truth {
+            Truth::True => "true",
+            Truth::False => "false",
+            Truth::Unavailable => "unavailable",
+        };
+        let truth = self.witness_truth(path, side);
+        let root_truth = self.witness_truth(&node.path, side);
+        tree_work(self.samples.len(), false);
+        vector_copy_work(path.len());
+        let sample = self
+            .samples
+            .get(&(path.to_string(), if side == Some(Side::No) { 1 } else { 0 }));
+        let values = match predicate {
+            Predicate::Compare { left, right, .. }
+            | Predicate::CrossedBelow { left, right }
+            | Predicate::CrossedAbove { left, right } => Some((left, right)),
+            _ => None,
+        };
+        let reference = |value: &ValueSpec| {
+            if let ValueSpec::Reference { reference } = value {
+                Some(reference.clone())
+            } else {
+                None
+            }
+        };
+        let unit = values.and_then(|(left, _)| match left {
+            ValueSpec::Literal { unit, .. } => Some(*unit),
+            ValueSpec::Reference { reference } => {
+                tree_work(self.strategy.numeric_info.len(), false);
+                self.strategy
+                    .numeric_info
+                    .get(reference)
+                    .map(|info| info.unit)
+            }
+        });
+        let required = sample
+            .and_then(|s| s.right)
+            .map(|value| Decimal(value).to_string())
+            .or_else(|| {
+                values.and_then(|(_, value)| {
+                    if let ValueSpec::Literal { value, .. } = value {
+                        Some(value.clone())
+                    } else {
+                        None
+                    }
+                })
+            });
+        let blocked = match &plan.selector {
+            Some(Selector::CheckpointSide { checkpoint, .. }) if side.is_none() => {
+                Some(checkpoint.clone())
+            }
+            _ => None,
+        };
+        let checkpoint_id = match predicate {
+            Predicate::CheckpointReached { checkpoint }
+            | Predicate::AfterCheckpointUpdate { checkpoint, .. } => Some(checkpoint.clone()),
+            _ => plan.checkpoint.as_ref().map(|c| c.id.clone()),
+        };
+        let interval = if self.market.is_none() {
+            "no_market"
+        } else if self.in_window(node.during) {
+            "within"
+        } else {
+            let open = self
+                .context
+                .markets
+                .iter()
+                .inspect(inspect_entry)
+                .find(|m| Some(m.market_id.as_str()) == self.market.as_deref())
+                .map_or(0, |m| m.open_ms);
+            if i128::from(self.frontier) - i128::from(open)
+                < i128::from(node.during.start_seconds) * 1000
+            {
+                "before"
+            } else {
+                "ended"
+            }
+        };
+        let left_identity = sample.and_then(|s| s.left_identity);
+        let right_identity = sample.and_then(|s| s.right_identity);
+        let witness = RuleWitness {
+            path: path.into(),
+            parent_path: if path == node.path {
+                None
+            } else {
+                path.rsplit_once('.').map(|(p, _)| p.into())
+            },
+            root_path: node.path.clone(),
+            root_kind: kind(root),
+            root_status: status(root_truth),
+            option_id: if plan.checkpoint.is_none() {
+                Some(
+                    self.leaf_plans[plan_index - self.strategy.document.checkpoints.len()]
+                        .leaf
+                        .id
+                        .clone(),
+                )
+            } else {
+                None
+            },
+            checkpoint_id,
+            side,
+            kind: kind(predicate),
+            status: status(truth),
+            interval_state: interval,
+            interval_start_seconds: node.during.start_seconds.to_string(),
+            interval_end_seconds: node.during.end_seconds.to_string(),
+            blocked_by_checkpoint: blocked,
+            left_reference: values
+                .and_then(|(v, _)| reference(v))
+                .or_else(|| match predicate {
+                    Predicate::ConfirmedUpdates { count_input, .. }
+                    | Predicate::AfterCheckpointUpdate { count_input, .. } => {
+                        Some(count_input.clone())
+                    }
+                    _ => None,
+                }),
+            right_reference: values.and_then(|(_, v)| reference(v)),
+            observed: sample.and_then(|s| s.left).map(|v| Decimal(v).to_string()),
+            required,
+            comparison: match predicate {
+                Predicate::Compare { comparison, .. } => Some(match comparison {
+                    ComparisonOp::LessThan => "less_than",
+                    ComparisonOp::AtMost => "at_most",
+                    ComparisonOp::EqualTo => "equal_to",
+                    ComparisonOp::AtLeast => "at_least",
+                    ComparisonOp::GreaterThan => "greater_than",
+                }),
+                _ => None,
+            },
+            unit,
+            binding_id: left_identity.map(|v| v.binding_id),
+            value_transaction: left_identity.map(|v| v.value_transaction.to_string()),
+            observation_number: left_identity.map(|v| v.number.to_string()),
+            right_binding_id: right_identity.map(|v| v.binding_id),
+            right_value_transaction: right_identity.map(|v| v.value_transaction.to_string()),
+            right_observation_number: right_identity.map(|v| v.number.to_string()),
+            evaluated_at_ms: sample.map_or(self.frontier, |s| s.at_ms).to_string(),
+            transaction: sample
+                .map_or(self.last_transaction, |s| s.transaction)
+                .to_string(),
+        };
+        vector_copy_work(witness.heap_bytes());
+        witness
     }
 }

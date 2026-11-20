@@ -18,6 +18,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: python3 tests/credential-runner.test.py
+      - run: python3 tests/paper-runner.test.py
       - run: python3 tests/check-staged.test.py
       - run: npm run check
       - run: npm run build
@@ -27,3 +28,4 @@ jobs:
         run: cargo test -p metten-engine --release --locked --test strategy -- --ignored --nocapture
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: npm run tauri build -- --bundles app
+      - run: python3 scripts/verify-paper.py target/release/bundle/macos/Metten.app

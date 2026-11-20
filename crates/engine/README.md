@@ -24,7 +24,7 @@ This contract also covers completed issue #4: controlled rule validation/evaluat
 
 - Opening creates/opens a local SQLite workspace and lock file; SQLite may create auxiliary files. `Recorder` reads/writes `session_events` and appends immutable `strategy_versions`, whose contract is specified under [source](./src/README.md).
 - The engine owns a recorder thread and bounded control queue. Controls append records; `stop_and_save` waits for durable recording confirmation, while Drop only closes/joins the worker.
-- The foundation makes no network calls and handles no credentials or money. Pure rule evaluation uses controlled in-memory evidence; preview writes no version, while save appends a revalidated version.
+- The engine makes no network calls and handles no credentials. The separate controlled paper path owns simulated accounting. Pure rule evaluation uses controlled in-memory evidence; preview writes no version, while save appends a revalidated version.
 
 ## Verification
 
@@ -36,3 +36,7 @@ cargo test -p metten-engine --release --locked --test strategy -- --ignored --no
 ```
 
 The [source contract](./src/README.md) maps checks to behavior. [Issue #2 evidence](../../docs/verification/issue-2.md) records prior local tests and packaged-app checks, with their distribution and physical power-loss limits. Its pending-CI and review dispositions describe that historical checkpoint, not current PR status. No tests/builds were rerun for this documentation change. The issue #4 record distinguishes controlled rules, local packaged import proof and later unproven provider/trading integration.
+
+## Controlled paper lifecycle
+
+`Engine::paper_start/input/context/control/check_settlement` uses the same serialized engine worker, saved validator and evaluator. `paper_summary/latest/history/market/evidence` expose committed state and bounded read pages. The legacy session controls remain nonfinancial. [The source contract](src/README.md#controlled-paper-lifecycle-issue-6) owns the B0/B1 retry receipts, intent/outcome/settlement transactions, stopped reopen and evidence bounds; [public paper tests](tests/paper.rs) use real temporary SQLite and controlled source observations. Assumptions and usage are in the [paper guide](../../docs/strategies/paper.md). Actual verification is indexed in [issue 6](../../docs/verification/issue-6.md).

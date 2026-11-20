@@ -8,9 +8,9 @@
 Metten is an open-source Mac app in development for running supported Kalshi strategies locally. It is designed around a shared engine that keeps strategy rules separate from purchasing, accounting, and recovery.
 
 > [!NOTE]
-> **Early development:** Metten currently offers a read-only Sources prototype, a non-trading test session with saved history, and local JSON strategy preview and immutable versions. Paper trading, live trading, and a public release are not yet available.
+> **Early development:** Metten currently offers a read-only Sources prototype, a non-trading test session with saved history, and local JSON strategy preview and immutable versions. A controlled paper learning example now connects saved rules to finite simulated purchases, exact fees, settlement and market history. It uses synthetic inputs and an accelerated clock. Live trading and a public release are not available.
 
-[Write a strategy](docs/strategies/authoring.md) · [Agent authoring](docs/strategies/agent-authoring.md) · [Get started](#run-the-non-trading-foundation) · [Contributing](CONTRIBUTING.md) · [Product specification](METTEN_DESIGN_DRAFT_2026-11-12.md) · [Issues](https://github.com/moultonpoint/metten/issues)
+[Controlled paper walkthrough](docs/strategies/paper.md) · [Write a strategy](docs/strategies/authoring.md) · [Agent authoring](docs/strategies/agent-authoring.md) · [Get started](#run-the-non-trading-foundation) · [Contributing](CONTRIBUTING.md) · [Product specification](METTEN_DESIGN_DRAFT_2026-11-12.md) · [Issues](https://github.com/moultonpoint/metten/issues)
 
 ## What we're building
 
@@ -44,6 +44,8 @@ npm run tauri dev
 ```
 
 Sources exposes named read-only connections for Kalshi, BRTI, Coinbase and Kraken. Ordinary setup uses production market data. To connect Kalshi, enter its API key ID and PEM private key in Sources and save them to protected, local-only Mac Keychain, then press Connect for the source you want. Saving a key or reopening the app does not connect automatically. BRTI shares the Kalshi credential; authentication alone does not prove BRTI access. Received prices do not establish verified freshness, complete history or strategy usability; inspect each source's status and the [source profiles and limits](docs/sources/README.md).
+
+The Paper workspace runs the saved learning strategy with fixed settings, synthetic finite books and a 20× clock. It stays separate from Sources and makes no provider requests. Follow the [paper guide](docs/strategies/paper.md) for controls, fees, receipts and reopening.
 
 The separate controlled session still uses a manual test clock: start, advance and pause it. Now and History display committed SQLite records; reopening retains history and starts stopped. This session is not paper trading and has no orders or financial accounting.
 

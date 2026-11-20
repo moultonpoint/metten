@@ -56,3 +56,11 @@ zero-network read counts, fixture publication completion, scoped SID retirement
 and production-transport refusal. Receiver tests exercise real Unix sockets,
 framing/deadlines, duplicate sequence, dispatch-before-ack, EOF/Quit and late
 completion. Process-only runner checks remain separate from packaged execution.
+
+## Controlled paper boundaries
+
+`crates/engine/tests/paper.rs` uses public Engine operations, saved learning rules, controlled SourceState observations/clock and real temporary SQLite for exact money, finite full/zero fill, source/book identity, input receipts, controls, failed commits and stopped settlement-only reopen. `paper_storage.rs` covers migration/rollback, numeric row/exact source identity, composite foreign keys, unique dispatch and the 4096-key evidence bound. Strategy tests cover cached witnesses, Boolean parent proof, cap/serialized maximum and existing independent work/allocation/Stop probes.
+
+Native `paper::tests` and local-main permission tests cover strict decoding, owned playback and the early packaged-check implementation. `tests/paper.test.mjs` uses the shared deterministic VM harness for exact string presentation, controls, unconfirmed Go identity, stale responses, journal focus and refreshed/paged details. These are not actual WKWebView IPC or screen-reader tests.
+
+`python3 tests/paper-runner.test.py` checks metadata executable resolution, protocol refusal, actual exit, bounded output, cooperative timeout and retained open-database ownership. After building, `python3 scripts/verify-paper.py target/release/bundle/macos/Metten.app` exercises the packaged native dispatcher/engine/SQLite path without credentials, providers, GUI or real orders. [Issue 6](../docs/verification/issue-6.md) records exact source/check outcomes and unverified limits.

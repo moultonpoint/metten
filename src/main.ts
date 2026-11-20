@@ -1,7 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Action, Snapshot, StrategyRequest, StrategyResponse, StrategyDetail, SourceName, SourceRequest, SourceResponse, SourceSnapshot, ProviderCredentialResponse } from './contract';
-import { presentation, strategyFailure, sourceFailure, sourcePresentation } from './view';
+import { presentation, strategyFailure, sourceFailure, sourcePresentation, paperMoney, paperFailure, paperReceipt } from './view';
 import './style.css';
+import learningExample from '../examples/learning.json?raw';
+import type { PaperRequest, PaperResponse, PaperSnapshot, PaperReceipt } from './contract';
 
 function element<T extends HTMLElement>(id: string): T {
   const value = document.getElementById(id);
@@ -174,6 +176,11 @@ async function loadStrategies(before_id?: string) {
     });
     if (before_id) element('strategy-versions').append(...items);
     else element('strategy-versions').replaceChildren(...items);
+    const priorPaperVersion = paperVersion.value;
+    const choices = result.versions.filter(v => v.status === 'supported').map(version => { const option = document.createElement('option'); option.value = version.id; option.textContent = `Version ${version.id} · ${version.display_name ?? 'Saved strategy'}`; return option; });
+    if (before_id) paperVersion.append(...choices); else { const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'Choose a saved version'; paperVersion.replaceChildren(empty, ...choices); }
+    if (priorPaperVersion) paperVersion.value = priorPaperVersion;
+    paperControls();
     nextCursor = result.next_cursor;
     element('strategy-list-status').textContent = result.versions.length ? 'Saved versions. Select one to inspect.' : 'No saved versions.';
   } catch (failure) {
@@ -256,6 +263,8 @@ sourcePanel.addEventListener('toggle', () => {
 });
 document.addEventListener?.('visibilitychange', () => {
   sourceGeneration++;
+  ++paperVisibilityGeneration;
+  if (!document.hidden) requestPaperRead('summary'); else if (paperTimer !== undefined) window.clearTimeout(paperTimer);
   if (sourcesActive()) queueSourceRead({ operation: 'snapshot' });
   else if (sourceTimer !== undefined) window.clearTimeout?.(sourceTimer);
 });
@@ -295,3 +304,230 @@ for (const operation of ['status', 'save', 'replace', 'remove'] as const) elemen
   });
 });
 if (sourcesActive()) queueSourceRead({ operation: 'snapshot' });
+
+const paperPanel = element<HTMLDetailsElement>('paper-panel');
+const paperVersion = element<HTMLSelectElement>('paper-version');
+const paperSettings = element<HTMLFieldSetElement>('paper-settings');
+let paperSnapshot: PaperSnapshot | null = null;
+let paperHistory: PaperReceipt[] = [];
+let paperCursor: string | null = null;
+let paperSelection: { run_id: string; paper_market_id: string } | null = null;
+let paperReadBusy = false;
+let paperWanted: 'summary' | 'detail' | 'more' | 'evidence_more' | null = null;
+let paperActionPending = false;
+let paperActionGeneration = 0;
+let paperVisibilityGeneration = 0;
+let paperSelectionGeneration = 0;
+let paperResponseEpoch = 0;
+let paperEvidenceCursor: string | null = null;
+let paperDetailBase = '';
+let paperJournalKey = '';
+let paperJournalNodes = new Map<string, { item: HTMLLIElement; button: HTMLButtonElement; receipt: PaperReceipt }>();
+let paperUnavailable = true;
+let paperHistoryKey = '';
+let paperRequestError = '';
+let paperTimer: ReturnType<typeof window.setTimeout> | undefined;
+let paperStartRequest: Extract<PaperRequest, { operation: 'start' }> | null = null;
+function paperControls() {
+  const run = paperSnapshot?.run;
+  const active = !!run && run.control_state !== 'stopped';
+  const holding = run?.pending_holdings ?? false;
+  paperSettings.disabled = active || holding || paperStartRequest !== null || paperActionPending || (paperUnavailable && !!run);
+  element<HTMLButtonElement>('paper-go').disabled = paperUnavailable || active || holding || paperActionPending || (!paperStartRequest && !paperVersion.value);
+  element<HTMLButtonElement>('paper-pause').disabled = !run;
+  element<HTMLButtonElement>('paper-resume').disabled = paperUnavailable || !active || !paperSnapshot?.effective_paused || run?.control_state === 'unresolved' || paperActionPending;
+  element<HTMLButtonElement>('paper-stop').disabled = paperUnavailable || !active || paperActionPending;
+  element<HTMLButtonElement>('paper-settle').disabled = paperUnavailable || !run || active || !holding || paperActionPending;
+  element<HTMLButtonElement>('paper-more').disabled = paperReadBusy || paperCursor === null;
+  if (run && paperSettings.disabled && !paperStartRequest) {
+    paperVersion.value = run.strategy_version_id;
+    if (paperVersion.value !== run.strategy_version_id) { const option = document.createElement('option'); option.value = run.strategy_version_id; option.textContent = `Version ${run.strategy_version_id} · current run`; paperVersion.append(option); paperVersion.value = run.strategy_version_id; }
+    element<HTMLInputElement>('paper-quantity').value = run.quantity;
+    element<HTMLInputElement>('paper-minimum').value = run.minimum_price;
+    element<HTMLInputElement>('paper-maximum').value = run.maximum_price;
+    element<HTMLInputElement>('paper-balance').value = paperMoney(run.starting_balance).slice(1);
+  }
+  element<HTMLButtonElement>('paper-evidence-more').disabled = paperReadBusy || paperEvidenceCursor === null;
+  element('paper-go').textContent = paperStartRequest ? 'Retry the same Go request' : 'Go';
+}
+function renderPaper(snapshot: PaperSnapshot): boolean {
+  const prior = paperSnapshot;
+  if (prior?.run && !snapshot.run) return false;
+  if (prior?.run && snapshot.run && (BigInt(snapshot.run.run_id) < BigInt(prior.run.run_id) || snapshot.run.run_id === prior.run.run_id && BigInt(snapshot.run.revision) < BigInt(prior.run.revision))) return false;
+  if (prior && BigInt(snapshot.effective_generation) < BigInt(prior.effective_generation)) return false;
+  paperSnapshot = snapshot;
+  const run = snapshot.run;
+  if (run && run.run_id !== prior?.run?.run_id) element<HTMLDetailsElement>('paper-settings-details').open = false;
+  if (run && paperStartRequest?.start_uuid === run.start_uuid) paperStartRequest = null;
+  const states: Record<string, string> = { collecting: 'Collecting required evidence', waiting: 'Waiting for the next full market boundary', active: 'Monitoring the current paper market', paused: 'Purchases paused · monitoring continues', stopped: 'Stopped · purchases remain stopped', unresolved: 'Stopped · an operation remains unconfirmed' };
+  element('paper-status').textContent = run ? (snapshot.effective_paused && run.control_state !== 'stopped' && run.control_state !== 'unresolved' ? 'Purchases paused · monitoring continues' : states[run.control_state]) : 'Ready for a controlled paper example';
+  element('paper-fixed').textContent = run ? `Run ${run.run_id} · Version ${run.strategy_version_id} · ${run.quantity} contracts per market · ${run.minimum_price}–${run.maximum_price}¢ · starting balance ${paperMoney(run.starting_balance)} · cash ${paperMoney(run.cash)} · reserved ${paperMoney(run.reserved)}\nSynthetic clock ${run.virtual_frontier_ms} ms · ${snapshot.stop_after_market ? 'Stop after market requested · ' : ''}${run.pending_ordinal === null ? 'Displayed accounting is committed.' : 'An input remains unconfirmed; inspect details.'}` : 'Choose a saved version and fixed settings. Go waits for an eligible full boundary.';
+  const errorCode = snapshot.playback_error ?? run?.error_code;
+  element('paper-error').textContent = errorCode ? paperFailure({ code: errorCode }) : paperRequestError;
+  paperControls();
+  return true;
+}
+function showPaperReceipt(receipt: PaperReceipt) {
+  const view = paperReceipt(receipt);
+  element('paper-result-title').textContent = view.title;
+  element('paper-reason').textContent = view.reason;
+  const facts = view.facts.flatMap(([name, value]) => {
+    const label = document.createElement('dt'); label.textContent = name;
+    const content = document.createElement('dd'); content.textContent = value;
+    return [label, content];
+  });
+  element('paper-receipt').replaceChildren(...facts);
+}
+function renderPaperHistory() {
+  const focused = document.activeElement?.getAttribute('data-paper-market');
+  const nodes = new Map<string, { item: HTMLLIElement; button: HTMLButtonElement; receipt: PaperReceipt }>();
+  for (const receipt of paperHistory) {
+    const key = `${receipt.run_id}:${receipt.paper_market_id}`;
+    let node = paperJournalNodes.get(key);
+    if (!node) {
+      node = { item: document.createElement('li'), button: document.createElement('button'), receipt };
+      node.button.setAttribute('data-paper-market', key);
+      const entry = node;
+      node.button.addEventListener('click', () => {
+        paperSelection = { run_id: entry.receipt.run_id, paper_market_id: entry.receipt.paper_market_id }; ++paperSelectionGeneration;
+        paperEvidenceCursor = null; paperDetailBase = ''; element('paper-detail').textContent = 'Reading the selected market…'; showPaperReceipt(entry.receipt); renderPaperHistory(); requestPaperRead('detail');
+      });
+      node.item.append(node.button);
+    }
+    node.receipt = receipt;
+    const view = paperReceipt(receipt);
+    node.button.textContent = `Run ${receipt.run_id} · ${receipt.source_market_id}\n${view.title}${receipt.settled_net === null ? '' : '\nNet ' + paperMoney(receipt.settled_net)}`;
+    node.button.ariaPressed = String(paperSelection?.run_id === receipt.run_id && paperSelection.paper_market_id === receipt.paper_market_id);
+    nodes.set(key, node);
+  }
+  const key = [...nodes.keys()].join(',');
+  if (key !== paperJournalKey || !nodes.size && paperJournalNodes.size) {
+    element('paper-history').replaceChildren(...[...nodes.values()].map(n => n.item));
+    if (focused) nodes.get(focused)?.button.focus({ preventScroll: true });
+  }
+  if (!nodes.size && paperJournalKey !== 'empty') {
+    const empty = document.createElement('li'); empty.textContent = 'No participating markets yet. Prepared markets are not counted.'; element('paper-history').replaceChildren(empty);
+  }
+  paperJournalKey = nodes.size ? key : 'empty'; paperJournalNodes = nodes;
+}
+function requestPaperRead(kind: 'summary' | 'detail' | 'more' | 'evidence_more') {
+  if (!paperPanel.open || document.hidden) return;
+  if (paperReadBusy) { if (kind !== 'summary' || paperWanted === null) paperWanted = kind; return; }
+  void readPaper(kind);
+}
+async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') {
+  if (paperReadBusy || !paperPanel.open || document.hidden) return;
+  paperReadBusy = true;
+  const action = paperActionGeneration, visibility = paperVisibilityGeneration, selectedGeneration = paperSelectionGeneration, responseEpoch = paperResponseEpoch;
+  const current = () => responseEpoch === paperResponseEpoch && action === paperActionGeneration && visibility === paperVisibilityGeneration && paperPanel.open && !document.hidden;
+  try {
+    if (kind === 'summary') {
+      const response = await invoke<PaperResponse>('paper', { operation: 'snapshot' });
+      if (!current()) return;
+      if (response.kind !== 'snapshot') throw new Error('Unexpected paper response');
+      if (!renderPaper(response)) return;
+      const run = response.run;
+      const key = run ? `${run.run_id}:${run.history_revision}:${run.control_state}:${run.cash}` : 'empty';
+      if (key !== paperHistoryKey) {
+        const history = await invoke<PaperResponse>('paper', { operation: 'history' });
+        if (!current()) return;
+        if (history.kind !== 'history') throw new Error('Unexpected paper history');
+        paperHistory = history.page.markets; paperCursor = history.page.next_cursor; paperHistoryKey = key;
+        const latestCurrent = paperHistory.find(m => m.run_id === run?.run_id);
+        if (!paperSelection && latestCurrent) paperSelection = { run_id: latestCurrent.run_id, paper_market_id: latestCurrent.paper_market_id };
+        renderPaperHistory();
+        const selected = paperHistory.find(r => r.run_id === paperSelection?.run_id && r.paper_market_id === paperSelection.paper_market_id);
+        if (selected) {
+          showPaperReceipt(selected);
+          ++paperSelectionGeneration; paperEvidenceCursor = null;
+          element('paper-detail').textContent = 'Receipt updated. Open details to read the current retained evidence.';
+          if (element<HTMLDetailsElement>('paper-details').open) paperWanted = 'detail';
+        }
+      }
+      paperUnavailable = false;
+    }
+    if (kind === 'more' && paperCursor !== null) {
+      const response = await invoke<PaperResponse>('paper', { operation: 'history', before_paper_market_id: paperCursor });
+      if (!current()) return;
+      if (response.kind !== 'history') throw new Error('Unexpected paper history');
+      paperHistory = response.page.markets; paperCursor = response.page.next_cursor; renderPaperHistory();
+    }
+    if (kind === 'detail' && paperSelection) {
+      const selection = { ...paperSelection }, generation = paperSelectionGeneration;
+      element('paper-detail').textContent = 'Reading confirmed receipt and retained evidence…';
+      const response = await invoke<PaperResponse>('paper', { operation: 'market', ...selection });
+      if (!current() || generation !== paperSelectionGeneration) return;
+      if (response.kind !== 'market') throw new Error('Unexpected paper receipt');
+      showPaperReceipt(response.receipt);
+      paperDetailBase = JSON.stringify({ run: response.run, receipt: response.receipt, assumptions: response.assumptions }, null, 2);
+      element('paper-detail').textContent = paperDetailBase;
+      const evidence = await invoke<PaperResponse>('paper', { operation: 'evidence', ...selection });
+      if (!current() || generation !== paperSelectionGeneration) return;
+      if (evidence.kind !== 'evidence') throw new Error('Unexpected paper evidence');
+      paperEvidenceCursor = evidence.page.next_cursor;
+      element('paper-detail').textContent = paperDetailBase + (evidence.page.evidence.length ? '\n\nRetained evidence (up to 20 records)\n' + JSON.stringify(evidence.page.evidence, null, 2) : '\n\nNo additional rule witnesses were retained.');
+    }
+    if (kind === 'evidence_more' && paperSelection && paperEvidenceCursor !== null) {
+      const response = await invoke<PaperResponse>('paper', { operation: 'evidence', ...paperSelection, before_evidence_id: paperEvidenceCursor });
+      if (!current() || selectedGeneration !== paperSelectionGeneration) return;
+      if (response.kind !== 'evidence') throw new Error('Unexpected paper evidence');
+      paperEvidenceCursor = response.page.next_cursor;
+      element('paper-detail').textContent = paperDetailBase + '\n\nOlder retained evidence (up to 20 records)\n' + JSON.stringify(response.page.evidence, null, 2);
+    }
+  } catch {
+    if (!current() || (kind === 'detail' || kind === 'evidence_more') && selectedGeneration !== paperSelectionGeneration) return;
+    if (kind === 'summary') { paperUnavailable = true; element('paper-status').textContent = 'Paper status unavailable · Pause remains available'; }
+    element('paper-error').textContent = 'Paper state could not be read. Last confirmed history remains visible. Pause purchases and refresh status.';
+  } finally {
+    paperReadBusy = false; paperControls();
+    const desired = paperWanted; paperWanted = null;
+    if (desired && paperPanel.open && !document.hidden) requestPaperRead(desired); else schedulePaperRead();
+  }
+}
+function schedulePaperRead() {
+  if (paperTimer !== undefined) window.clearTimeout(paperTimer);
+  if (paperPanel.open && !document.hidden) paperTimer = window.setTimeout(() => requestPaperRead('summary'), 200);
+}
+async function paperAction(request: PaperRequest) {
+  if (paperActionPending && request.operation !== 'pause') return;
+  const generation = ++paperActionGeneration;
+  const visibility = paperVisibilityGeneration;
+  paperActionPending = true; paperRequestError = ''; element('paper-error').textContent = '';
+  element('paper-status').textContent = request.operation === 'start' ? 'Go requested · waiting for confirmation. A request is not a fill.' : `Requesting ${request.operation.replaceAll('_', ' ')}…`;
+  paperControls();
+  try {
+    const response = await invoke<PaperResponse>('paper', request);
+    if (generation !== paperActionGeneration) return;
+    if (response.kind !== 'snapshot') throw new Error('Unexpected paper action response');
+    ++paperResponseEpoch;
+    if (visibility === paperVisibilityGeneration && paperPanel.open && !document.hidden && request.operation === 'start' && response.run?.run_id !== paperSnapshot?.run?.run_id) {
+      paperSelection = null; ++paperSelectionGeneration; paperEvidenceCursor = null;
+      element('paper-result-title').textContent = 'No market entered'; element('paper-reason').textContent = 'The new run waits for its eligible full market boundary.'; element('paper-receipt').replaceChildren();
+      element('paper-detail').textContent = 'Select a participating market to inspect its confirmed facts.';
+    }
+    if (visibility === paperVisibilityGeneration && paperPanel.open && !document.hidden) renderPaper(response);
+  } catch (failure) {
+    if (generation !== paperActionGeneration) return;
+    ++paperResponseEpoch;
+    if (request.operation === 'start' && failure && typeof failure === 'object' && 'code' in failure && ['range', 'invalid_request', 'unsupported_input', 'run_active'].includes(String(failure.code))) paperStartRequest = null;
+    if (visibility === paperVisibilityGeneration && paperPanel.open && !document.hidden) { paperRequestError = paperFailure(failure); element('paper-error').textContent = paperRequestError; }
+  } finally {
+    if (generation === paperActionGeneration) { paperActionPending = false; paperHistoryKey = ''; paperControls(); requestPaperRead('summary'); }
+  }
+}
+element('paper-go').addEventListener('click', () => {
+  if (element<HTMLButtonElement>('paper-go').disabled) return;
+  paperStartRequest ??= { operation: 'start', start_uuid: crypto.randomUUID(), version_id: paperVersion.value, settings: { quantity: element<HTMLInputElement>('paper-quantity').value, minimum_price: element<HTMLInputElement>('paper-minimum').value, maximum_price: element<HTMLInputElement>('paper-maximum').value, starting_balance: element<HTMLInputElement>('paper-balance').value } };
+  void paperAction(paperStartRequest);
+});
+for (const [id, operation] of [['pause', 'pause'], ['resume', 'resume'], ['stop', 'stop_after_market'], ['settle', 'check_settlement']] as const) {
+  element(`paper-${id}`).addEventListener('click', () => { const run = paperSnapshot?.run; if (run) void paperAction({ operation, run_id: run.run_id }); });
+}
+element('paper-refresh').addEventListener('click', () => { paperHistoryKey = ''; requestPaperRead('summary'); });
+element('paper-evidence-more').addEventListener('click', () => requestPaperRead('evidence_more'));
+element('paper-more').addEventListener('click', () => requestPaperRead('more'));
+paperVersion.addEventListener('change', paperControls);
+element('paper-example').addEventListener('click', () => { editor.value = learningExample; changedText(); strategyStatus.textContent = 'Learning example loaded. Preview and save it, then choose its saved version for paper.'; editor.focus(); });
+paperPanel.addEventListener('toggle', () => { ++paperVisibilityGeneration; if (paperPanel.open) requestPaperRead('summary'); else if (paperTimer !== undefined) window.clearTimeout(paperTimer); });
+element('paper-details').addEventListener('toggle', () => { if (element<HTMLDetailsElement>('paper-details').open) requestPaperRead('detail'); });
+paperControls(); requestPaperRead('summary');

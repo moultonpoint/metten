@@ -7,6 +7,7 @@ fn main() {
             "strategies",
             "sources",
             "provider_credential",
+            "paper",
         ]),
     ))
     .expect("build manifest");

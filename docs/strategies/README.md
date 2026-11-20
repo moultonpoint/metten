@@ -8,3 +8,7 @@ A strategy is a local JSON file describing when a purchase could be considered. 
 - [Shared learning file](../../examples/learning.json): download or copy this file as UTF-8 JSON.
 
 The example teaches mechanics, not profitability or an approved D/F strategy. Rules contain no credentials or private records. Successful validation proves supported syntax and meaning; it does not prove source access, licensed data, connected execution, paper qualification, production capacity or live fills. See [the product specification](../../METTEN_DESIGN_DRAFT_2026-11-12.md) and [local evidence](../verification/issue-4.md).
+
+## Controlled paper example
+
+The [paper guide](paper.md) explains how to run a saved learning version through synthetic finite purchases and settlement, read exact receipts and use Pause/Resume/Stop/quit. [Issue-6 evidence](../verification/issue-6.md) records actual checks and limitations.

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-paper"
+description = "Enables the paper command without any pre-configured scope."
+commands.allow = ["paper"]
+
+[[permission]]
+identifier = "deny-paper"
+description = "Denies the paper command without any pre-configured scope."
+commands.deny = ["paper"]

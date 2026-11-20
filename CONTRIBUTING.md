@@ -1,6 +1,6 @@
 # Contributing to Metten
 
-Metten is in early development. The current foundation is non-trading; paper and live trading are not available. Read the [README](README.md) for setup and the [product specification](METTEN_DESIGN_DRAFT_2026-11-12.md) for intended behavior.
+Metten is in early development. The controlled paper prototype uses synthetic inputs and an accelerated clock; live trading is unavailable. Read the [README](README.md) for setup and the [product specification](METTEN_DESIGN_DRAFT_2026-11-12.md) for intended behavior.
 
 ## Find work
 
@@ -141,3 +141,7 @@ Use the published maintainability standard from freshly resolved default-branch 
 Run `cargo test -p metten --locked` and the public engine source tests for changed native/source boundaries. Run `python3 tests/credential-runner.test.py` after shared bootstrap/runner changes. The isolated packaged commands and proof limits are in [scripts](scripts/README.md#isolated-sources-walkthrough-step-5). Calibration/qualification belongs to deferred issue16; no test grants provider/account/ordinary credential access or rights. Reuse unchanged release-hour arithmetic evidence only within its named version/assumptions; the complete Foundation job retains that gate.
 
 The capacity campaigns, collectors and diagnostics have been deleted by owner direction. No opt-in performance command remains. Complete the issue 5/6 prototype with ordinary product-behavior tests; issue16 owns any later measurements justified by the integrated application. Historical failures remain documented and establish no supported envelope. Never run all ignored tests together: remaining ignored engine/Keychain checks have their own explicit selection and authority requirements.
+
+## Controlled paper checks
+
+Run `python3 tests/paper-runner.test.py` with the ordinary checks. After `npm run tauri build -- --bundles app`, run `python3 scripts/verify-paper.py target/release/bundle/macos/Metten.app`. The latter resolves the bundle executable from Info.plist, uses a new owned workspace and invokes the headless synthetic-only protocol. It does not open a window, use credentials or connect providers. Preserve any workspace/PID the runner reports as exit-unconfirmed; never force cleanup of a live database owner. See [paper guide](docs/strategies/paper.md) and [actual evidence](docs/verification/issue-6.md).

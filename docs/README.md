@@ -47,3 +47,7 @@ These documents execute no code. Publishing tracker changes, executing verificat
 ## Verification
 
 Check local links and compare contract statements with referenced code and completed-scope issue criteria. Use the reporting procedure in [egm/README.md](egm/README.md). No ignored private research, local planning or runtime records are included.
+
+## Controlled paper lifecycle
+
+Use the [paper walkthrough](strategies/paper.md) for fixed settings, synthetic assumptions, distinct controls and exact receipts. [Issue-6 evidence](verification/issue-6.md) maps implementation checks and remaining limits to all five acceptance criteria; the reviewed plan remains under [issue-6 proposals](proposals/issue-6-egm/design_draft.md).

@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "revision": "controlled_learning_v1",
+  "origin": "synthetic_controlled",
+  "markets": [
+    {"series_id":"btc15m","source_market_id":"KXBTC15M-PAPER-CURRENT","source_contract_id":"paper-current","open_ms":-899000,"close_ms":1000},
+    {"series_id":"btc15m","source_market_id":"KXBTC15M-PAPER-NEXT","source_contract_id":"paper-next","open_ms":1000,"close_ms":901000}
+  ],
+  "observations": [
+    {"at_ms":0,"source_market_id":"KXBTC15M-PAPER-CURRENT","yes_ask":"35","no_ask":"70","available_millionths":"100000000","valid_until_ms":1000000},
+    {"at_ms":0,"source_market_id":"KXBTC15M-PAPER-NEXT","yes_ask":"35","no_ask":"70","available_millionths":"100000000","valid_until_ms":1000000},
+    {"at_ms":61000,"source_market_id":"KXBTC15M-PAPER-NEXT","yes_ask":"80","no_ask":"25","available_millionths":"100000000","valid_until_ms":1000000}
+  ],
+  "settlements": [
+    {"source_market_id":"KXBTC15M-PAPER-NEXT","source_contract_id":"paper-next","close_ms":901000,"outcome_id":"synthetic-final-no-v1","winning_side":"no","available_ms":901000}
+  ]
+}

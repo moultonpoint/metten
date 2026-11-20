@@ -93,3 +93,7 @@ UI, dummy item and SQLite remain unchanged. Building a bundle does not verify
 provider Keychain behavior inside that bundle; see the issue #5 evidence limits.
 
 The [step-5 native contract](src/README.md#step-5-source-commands-and-isolated-receiver) owns the new finite source/provider-credential commands, bounded response projection, shared-source membership, guarded-Quit admission and isolated source-frame receiver. The local-main capability grants no browser network/filesystem/shell access. Generated source/provider-credential command permission files come from the existing Tauri build mechanism. The existing session remains non-trading; source inspection never enables connected financial evaluation.
+
+## Controlled paper integration
+
+The local-main-only `paper` command is generated in `build.rs`, allowed in `capabilities/main.json` and implemented in `src/paper.rs`. It has one mutation/read admission and one retained playback thread; it delegates all decisions/accounting to `metten-engine`. The packaged `--paper-check <owned-empty-directory>` entry runs before Tauri, Keychain and provider setup. Verify the bundle with `python3 scripts/verify-paper.py target/release/bundle/macos/Metten.app`; limits/results are in [issue 6](../docs/verification/issue-6.md).

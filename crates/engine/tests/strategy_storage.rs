@@ -142,7 +142,7 @@ fn all_prior_revisions_migrate_without_reinterpreting_or_rewriting_history() {
             assert_eq!(
                 db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                3
+                4
             );
             assert_eq!(
                 db.query_row(
@@ -231,7 +231,7 @@ fn termination_before_commit_rolls_back_and_newer_revisions_refuse() {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
     assert!(revision > 2);
-    db.pragma_update(None, "user_version", 4).unwrap();
+    db.pragma_update(None, "user_version", 5).unwrap();
     drop(db);
     assert!(Engine::open(&path).err().unwrap().contains("newer Metten"));
 }

@@ -1,0 +1,11 @@
+# Focused resolution — A1/A2/A3
+
+Connor authorized resolving the three engineering contracts and obtaining a focused independent recheck. All three original findings are accepted as PROPOSE FIX; none is contested or declined. Current published baseline freshly resolves main/c7b1b4c79d2ca603226f78bcddd143618c3a875e at2026-11-19T06:23:31Z; selected older868609baffc25f06ecb43d8760e7cdd60f684a68 and unrelated work are preserved. Root AGENTS/verification refreshed, applicable unchanged contracts reused; root-only nested instructions.
+
+- A1 / originalR1: section2.1 now defines latest-completed-only equality, exact bounded canonical receipts, pendingB0/completedB1 transactions, explicit stale/gap/conflict behavior and no ordinary replay after reopen. Unknown financial effects remain blocked; interrupted source-only progress is retained as stopped evidence.
+- A2 / originalR2: section4.1 fixes explicit stopped-only settlement advancement from an immutable persisted synthetic manifest, reconstruction from confirmed holdings/settlement rows, atomic payout/frontier updates, no evaluator/source replay and exact pre-close-reopen behavior.
+- A3 / originalB1: section5.1 chooses numeric paper_market_id, exact separately retained source_market_id, unique run/source mapping, run-constrained foreign keys, explicit IPC fields and paging cursors. Prepared rows do not count as participation.
+
+Schema/API summaries and existing test cases are updated consistently; no new component, table, dependency, implementation file or scope expansion. Inventory remains39 files. Public/storage/native tests are specified for all boundary cases; no runtime tests have executed. Lead document/link/format/inventory checks passed. Independent focused verdict: all three closed, no new material finding; see [focused recheck](focused_recheck_report.md). Implementation authorization remains pending.
+
+Delivery refresh2026-11-19T06:32:21Z returned unchanged main/c7b1b4c79d2ca603226f78bcddd143618c3a875e. Published guidance/source unchanged, so prior unaffected full-review evidence is reused. Document checks cover links/format, bounded receipt/settlement/identity definitions, explicit boundary tests and the39-file inventory, not executed application behavior. Selected HEAD/index/tracking refs and unrelated work remain preserved.

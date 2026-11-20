@@ -1,4 +1,4 @@
-import type { Snapshot, SourceSnapshot, SourceName } from './contract';
+import type { Snapshot, SourceSnapshot, SourceName, PaperReceipt, PaperWitness } from './contract';
 
 export function presentation(snapshot: Snapshot) {
   const failed = snapshot.recording_error !== null;
@@ -44,4 +44,90 @@ export function sourcePresentation(snapshot: SourceSnapshot, name: SourceName) {
   for (const reason of unavailable) lines.push(Object.hasOwn(reasons, reason) ? reasons[reason] : 'This input is unavailable for strategy use.');
   if (received.some(b => !b.history_ready)) lines.push('Complete history is unverified.');
   return lines.join('\n');
+}
+
+
+export function paperMoney(amount: string): string {
+  if (!/^-?(0|[1-9][0-9]*)$/.test(amount)) throw new Error('Invalid exact amount');
+  const value = BigInt(amount);
+  const magnitude = value < 0n ? -value : value;
+  const fraction = (magnitude % 100000000n).toString().padStart(8, '0').replace(/0+$/, '').padEnd(2, '0');
+  return `${value < 0n ? '−' : ''}$${magnitude / 100000000n}.${fraction}`;
+}
+export function paperFailure(failure: unknown): string {
+  const code = failure && typeof failure === 'object' && 'code' in failure && typeof failure.code === 'string' ? failure.code : '';
+  const messages: Record<string, string> = {
+    busy: 'Paper work is busy. Inspect status, then retry explicitly.', range: 'Check the quantity, price range and starting balance.', invalid_request: 'The paper request is invalid. Check the fixed settings.',
+    unsupported_input: 'This controlled example supports Kalshi asks with no historical lookback. Choose a compatible saved version.',
+    run_active: 'Finish the current run and resolve its holdings before starting another example.', stale_run: 'This control belongs to an older run. Refresh paper status.',
+    stopped_context: 'Purchases are stopped. Reopening never restarts playback.', unresolved: 'A purchase outcome is unresolved. New purchases remain blocked; confirmed history is retained.',
+    storage: 'Recording could not be confirmed. Purchases are fenced. Inspect retained history and retry Quit after fixing storage.',
+    unconfirmed: 'This action is not confirmed. Inspect paper status before retrying.', resource_limit: 'The controlled input or response exceeds its supported bound. Purchases remain blocked.',
+    input_conflict: 'Conflicting paper input was refused. Purchases are stopped.', input_gap: 'A required paper input is missing. Purchases are stopped.', quitting: 'The application is stopping.',
+  };
+  return Object.hasOwn(messages, code) ? messages[code] : 'Paper state is unavailable. Pause purchases and refresh status.';
+}
+export function paperReason(reason: string): string {
+  const messages: Record<string, string> = {
+    prepared: 'Prepared for a future boundary; this market has not participated.',
+    confirmed_full_fill_pending_settlement: 'A full simulated fill is confirmed. The holding awaits its identified synthetic outcome.',
+    insufficient_quantity: 'The finite observed quantity could not fill the whole objective. A zero fill is confirmed; no fee was charged.',
+    settled: 'The identified synthetic outcome is recorded and the account reconciles after fees.',
+    canceled_before_dispatch: 'The proposal was canceled before dispatch. No purchase was confirmed.',
+    insufficient_funds: 'The whole objective, including its fee, could not be funded. Quantity was not reduced.',
+    evidence_mismatch: 'Waiting for a finite execution book matching the exact evaluated ask identity and price.',
+    purchases_paused: 'The rule qualified while purchases were paused. Monitoring continued; no purchase was confirmed.',
+    price: 'The evaluated purchase price is outside the fixed permitted range.',
+    unavailable: 'Required rule evidence was unavailable at the recorded check.', unavailable_evidence: 'Required source or execution evidence could not be established.',
+    condition_false: 'The purchase option did not qualify at the recorded check. View details for retained rule evidence.',
+    objective_blocked: 'The rule qualified, but the objective safeguards did not permit another purchase.',
+    eligible: 'The rule qualified. A confirmed purchase still requires coherent execution evidence, funded intent and a recorded outcome.',
+    lower_priority: 'An earlier eligible purchase option takes priority.', ambiguous_side: 'The rule did not establish one unique purchase side.',
+  };
+  return Object.hasOwn(messages, reason) ? messages[reason] : `Recorded reason: ${reason}`;
+}
+export function paperWitness(witness: PaperWitness): string {
+  const name = `${witness.option_id ? 'Option ' + witness.option_id : 'Checkpoint ' + (witness.checkpoint_id ?? 'check')} · ${witness.path}`;
+  const when = `At ${witness.evaluated_at_ms} ms on the synthetic clock`;
+  if (witness.blocked_by_checkpoint) return `${when}, ${name} could not select a side: checkpoint ${witness.blocked_by_checkpoint} was not latched.`;
+  if (witness.interval_state !== 'within') return `${when}, ${name} was outside its ${witness.interval_start_seconds}–${witness.interval_end_seconds} second interval (${witness.interval_state}).`;
+  if (witness.status === 'unavailable') return `${when}, could not evaluate ${name}: ${witness.left_reference ?? witness.right_reference ?? witness.kind.replaceAll('_', ' ')} was unavailable.`;
+  if (witness.kind === 'checkpoint_reached' || witness.kind === 'after_checkpoint_update') return `${when}, ${name}: ${witness.kind === 'checkpoint_reached' ? 'checkpoint ' + witness.checkpoint_id + ' was ' + (witness.status === 'true' ? 'latched' : 'not latched') : 'a genuine update after checkpoint ' + witness.checkpoint_id + ' was ' + (witness.status === 'true' ? 'observed' : 'not established')}.`;
+  const comparisons: Record<string, string> = { less_than: 'below', at_most: 'at most', equal_to: 'equal to', at_least: 'at least', greater_than: 'above' };
+  const units: Record<string, string> = { contract_cents: '¢', usd_per_btc: ' USD/BTC', percent: '%' };
+  const unit = witness.unit && Object.hasOwn(units, witness.unit) ? units[witness.unit] : witness.kind === 'held_for' ? ' seconds' : witness.kind === 'confirmed_updates' ? ' updates' : '';
+  const check = witness.observed !== null && witness.required !== null
+    ? `${witness.left_reference ?? witness.kind.replaceAll('_', ' ')} was ${witness.observed}${unit}; required ${witness.comparison && Object.hasOwn(comparisons, witness.comparison) ? comparisons[witness.comparison] : witness.kind === 'held_for' || witness.kind === 'confirmed_updates' ? 'at least' : ''} ${witness.required}${unit}`
+    : `${witness.kind.replaceAll('_', ' ')} was ${witness.status}`;
+  const root = witness.root_path !== witness.path ? ` The enclosing ${witness.root_kind === 'any' ? 'any-of' : 'all-of'} check was ${witness.root_status}.` : '';
+  return `${when}, ${name}: ${check} (${witness.status}).${root}`;
+}
+export function paperReceipt(receipt: PaperReceipt) {
+  const state = receipt.attempt_state;
+  const confirmed = state === 'full';
+  const terminal = confirmed || state === 'zero' || state === 'canceled';
+  const title = confirmed ? `Bought ${receipt.filled_quantity ?? '0'} ${(receipt.side ?? '').toUpperCase()} · ${receipt.settled_net === null ? 'pending settlement' : 'settled'}`
+    : state === 'zero' ? 'Attempted · zero contracts filled'
+    : state === 'intent' || state === 'dispatched' || state === 'unknown' ? 'Purchase outcome unconfirmed'
+    : state === 'canceled' ? 'Canceled before dispatch' : 'No confirmed purchase';
+  const facts: [string, string][] = [['Paper run', receipt.run_id], ['Saved strategy version', receipt.strategy_version_id], ['Market', receipt.source_market_id], ['Requested quantity', receipt.requested_quantity], ['Confirmed quantity', terminal ? receipt.filled_quantity ?? '0' : state === null ? 'No purchase' : 'Unconfirmed']];
+  if (receipt.side !== null) facts.push(['Side', receipt.side.toUpperCase()]);
+  if (receipt.price !== null) facts.push(['Requested price per contract', paperMoney(receipt.price)]);
+  if (receipt.attempt_virtual_ms !== null) facts.push(['Attempt time', `${receipt.attempt_virtual_ms} ms on the synthetic clock`]);
+  if (receipt.available_millionths !== null) facts.push(['Observed available quantity', paperQuantity(receipt.available_millionths)]);
+  if (terminal && receipt.debit !== null) facts.push(['Confirmed total debit', paperMoney(receipt.debit)]);
+  if (terminal && receipt.cost !== null) facts.push(['Confirmed cost', paperMoney(receipt.cost)]);
+  if (terminal && receipt.fee !== null) facts.push(['Confirmed fee', paperMoney(receipt.fee)]);
+  if (confirmed) facts.push(['Payout', receipt.payout === null ? 'Pending settlement' : paperMoney(receipt.payout)], ['Settled net', receipt.settled_net === null ? 'Pending settlement' : paperMoney(receipt.settled_net)]);
+  const check = receipt.purchase_check;
+  const block = check && ['price', 'insufficient_funds', 'purchases_paused', 'evidence_mismatch'].includes(receipt.reason)
+    ? ` At ${check.evaluated_at_ms} ms, ${check.offered_price === null ? 'the offered price was unavailable' : 'the offered price was ' + check.offered_price + '¢'}; permitted range ${check.minimum_price}–${check.maximum_price}¢.${receipt.reason === 'insufficient_funds' && check.required_debit !== null ? ' Full debit required ' + paperMoney(check.required_debit) + '; available ' + paperMoney(check.available_funds) + '.' : ''}` : '';
+  return { title, reason: (['condition_false', 'unavailable', 'unavailable_evidence', 'eligible'].includes(receipt.reason) && receipt.primary_witness ? paperWitness(receipt.primary_witness) : paperReason(receipt.reason) + (['ambiguous_side', 'objective_blocked'].includes(receipt.reason) && receipt.primary_witness ? ' ' + paperWitness(receipt.primary_witness) : '')) + block, facts };
+}
+
+export function paperQuantity(amount: string): string {
+  if (!/^(0|[1-9][0-9]*)$/.test(amount)) throw new Error('Invalid exact quantity');
+  const value = BigInt(amount);
+  const fraction = (value % 1000000n).toString().padStart(6, '0').replace(/0+$/, '');
+  return `${value / 1000000n}${fraction ? '.' + fraction : ''}`;
 }

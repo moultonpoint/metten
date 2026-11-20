@@ -3,6 +3,8 @@
 #[cfg(target_os = "macos")]
 mod credential;
 #[cfg(target_os = "macos")]
+mod paper;
+#[cfg(target_os = "macos")]
 mod provider_credential;
 #[cfg(target_os = "macos")]
 mod providers;
@@ -12,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 
 struct Workspace {
-    engine: Result<Engine, String>,
+    engine: Result<std::sync::Arc<Engine>, String>,
     #[cfg(target_os = "macos")]
     credentials: credential::Credentials,
     #[cfg(target_os = "macos")]
@@ -33,6 +35,12 @@ struct Workspace {
     source_read: std::sync::Arc<StrategyAdmission>,
     source_allowed: bool,
     strategy_operation: std::sync::Arc<StrategyAdmission>,
+    paper_operation: std::sync::Arc<StrategyAdmission>,
+    paper_read: std::sync::Arc<StrategyAdmission>,
+    #[cfg(target_os = "macos")]
+    paper: std::sync::Mutex<paper::NativePaper>,
+    #[cfg(target_os = "macos")]
+    paper_stop: std::sync::Arc<AtomicBool>,
     quitting: AtomicBool,
     exit_ready: AtomicBool,
     quit_error: std::sync::Mutex<Option<String>>,
@@ -662,13 +670,105 @@ async fn provider_credential(
     .map_err(|_| SourceFailure::new("unavailable"))?
 }
 
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn paper(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<serde_json::Value, metten_engine::paper::Failure> {
+    use metten_engine::paper::{Control, Failure, Request};
+    let mut request = paper::decode(request.body())?;
+    let guard = {
+        let workspace = app.state::<Workspace>();
+        if matches!(&request, Request::Resume { .. }) {
+            paper::admit_resume(
+                workspace
+                    .engine
+                    .as_ref()
+                    .map_err(|_| Failure::new("storage"))?,
+                &mut request,
+            );
+        }
+        if let Request::Pause { run_id } | Request::StopAfterMarket { run_id } = &request {
+            workspace
+                .engine
+                .as_ref()
+                .map_err(|_| Failure::new("storage"))?
+                .fence_paper_control(
+                    *run_id,
+                    if matches!(&request, Request::Pause { .. }) {
+                        Control::Pause
+                    } else {
+                        Control::StopAfterMarket
+                    },
+                )?;
+        }
+        admit_strategy(
+            if request.is_read() {
+                &workspace.paper_read
+            } else {
+                &workspace.paper_operation
+            },
+            &workspace.quitting,
+        )
+        .map_err(|e| Failure::new(e.code))?
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        let workspace = app.state::<Workspace>();
+        if workspace.quitting.load(Ordering::SeqCst) {
+            return Err(Failure::new("quitting"));
+        }
+        let engine = workspace
+            .engine
+            .as_ref()
+            .map_err(|_| Failure::new("storage"))?
+            .clone();
+        let mut owner = workspace
+            .paper
+            .lock()
+            .map_err(|_| Failure::new("unconfirmed"))?;
+        paper::dispatch(engine, &mut owner, request)
+    })
+    .await
+    .map_err(|_| Failure::new("unconfirmed"))?
+}
+
+fn wait_until_idle(operation: &StrategyAdmission, deadline: tokio::time::Instant) -> bool {
+    let mut lock = operation
+        .completion
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    while operation.busy.load(Ordering::SeqCst) {
+        let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
+            return false;
+        };
+        let (next, timed) = operation
+            .idle
+            .wait_timeout(lock, remaining)
+            .unwrap_or_else(|e| e.into_inner());
+        lock = next;
+        if timed.timed_out() {
+            return false;
+        }
+    }
+    true
+}
+
 fn begin_quit(app: &tauri::AppHandle) {
     let workspace = app.state::<Workspace>();
     if workspace.quitting.swap(true, Ordering::SeqCst) {
         return;
     }
     #[cfg(target_os = "macos")]
-    let deadline = {
+    let deadline = tokio::time::Instant::now() + providers::SHUTDOWN;
+    if let Ok(engine) = &workspace.engine {
+        engine.fence_paper_quit();
+    }
+    #[cfg(target_os = "macos")]
+    workspace.paper_stop.store(true, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    {
         if let Some(verifier) = workspace
             .source_verifier
             .lock()
@@ -682,8 +782,7 @@ fn begin_quit(app: &tauri::AppHandle) {
             .lock()
             .expect("source revocation poisoned")
             .revoke();
-        tokio::time::Instant::now() + providers::SHUTDOWN
-    };
+    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         #[cfg(target_os = "macos")]
@@ -692,28 +791,9 @@ fn begin_quit(app: &tauri::AppHandle) {
                 let app = app.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let operation = app.state::<Workspace>();
-                    let mut lock = operation
-                        .provider_operation
-                        .completion
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    while operation.provider_operation.busy.load(Ordering::SeqCst) {
-                        let Some(remaining) =
-                            deadline.checked_duration_since(tokio::time::Instant::now())
-                        else {
-                            return false;
-                        };
-                        let (next, timed) = operation
-                            .provider_operation
-                            .idle
-                            .wait_timeout(lock, remaining)
-                            .unwrap_or_else(|e| e.into_inner());
-                        lock = next;
-                        if timed.timed_out() {
-                            return false;
-                        }
-                    }
-                    true
+                    wait_until_idle(&operation.provider_operation, deadline)
+                        && wait_until_idle(&operation.paper_operation, deadline)
+                        && wait_until_idle(&operation.paper_read, deadline)
                 })
                 .await
             };
@@ -741,7 +821,20 @@ fn begin_quit(app: &tauri::AppHandle) {
                 })
                 .await
             };
-            let result = if !matches!(ready, Ok(true)) || !matches!(verifier_result, Ok(true)) {
+            let paper_result = {
+                let app = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    paper::NativePaper::stop_owner(
+                        &app.state::<Workspace>().paper,
+                        deadline.into_std(),
+                    )
+                })
+                .await
+            };
+            let result = if !matches!(ready, Ok(true))
+                || !matches!(verifier_result, Ok(true))
+                || !matches!(paper_result, Ok(true))
+            {
                 Err(providers::Failure::StillStopping)
             } else if let Some(source) = &mut source {
                 source.shutdown(deadline).await
@@ -762,20 +855,23 @@ fn begin_quit(app: &tauri::AppHandle) {
             let workspace = app.state::<Workspace>();
             wait_for_strategy(&workspace.strategy_operation);
             #[cfg(target_os = "macos")]
-            let _credential_operation = workspace
-                .credentials
-                .operation
-                .lock()
-                .expect("credential operation mutex poisoned");
-            #[cfg(target_os = "macos")]
-            let _provider_credentials = workspace
-                .provider_credentials
-                .lock()
-                .expect("provider credential owner poisoned");
+            {
+                #[cfg(target_os = "macos")]
+                let _credential_operation = workspace
+                    .credentials
+                    .operation
+                    .lock()
+                    .expect("credential operation mutex poisoned");
+                #[cfg(target_os = "macos")]
+                let _provider_credentials = workspace
+                    .provider_credentials
+                    .lock()
+                    .expect("provider credential owner poisoned");
+            }
             let result = workspace
                 .engine
                 .as_ref()
-                .map_or(Ok(()), Engine::stop_and_save);
+                .map_or(Ok(()), |engine| engine.stop_and_save());
             match result {
                 Ok(()) => {
                     workspace.exit_ready.store(true, Ordering::SeqCst);
@@ -808,6 +904,10 @@ fn context() -> tauri::Context<tauri::Wry> {
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    if let Some(code) = paper::check_entry() {
+        std::process::exit(code);
+    }
     #[cfg(target_os = "macos")]
     if let Some(code) = credential::provider_check() {
         std::process::exit(code);
@@ -846,14 +946,16 @@ fn main() {
                 };
                 std::fs::create_dir_all(&directory).map_err(|e| format!("Cannot open workspace. Check disk space and folder permissions, then reopen. {e}"))?;
                 Engine::open(directory.join("session.sqlite"))
-            })();
+            })().map(std::sync::Arc::new);
             let source_mode = source_setup.is_some();
             let (provider_store, channel) = if let Some((target,stream,session))=source_setup {
                 (provider_credential::native::Keychain::isolated(target),Some((stream,session)))
             }else{(provider_credential::native::Keychain::local(),None)};
             let coordinator=providers::Coordinator::new();
             let revocation=coordinator.revocation();
-            app.manage(Workspace { engine, #[cfg(target_os = "macos")] credentials: if source_mode { credential::Credentials::disabled() } else { credential::Credentials::setup() }, #[cfg(target_os = "macos")] providers: std::sync::Mutex::new(Some(coordinator)), #[cfg(target_os = "macos")] provider_credentials: std::sync::Mutex::new(Some(provider_credential::Credentials::new(provider_store))), source_handle: std::sync::Mutex::new(None), source_transport: std::sync::Arc::new((if source_mode {providers::transport::Transport::isolated()}else{providers::transport::Transport::new(providers::Environment::Production)}).map_err(|_| "Cannot prepare source transport")?), source_revocation: std::sync::Mutex::new(revocation), source_verifier: std::sync::Mutex::new(None), provider_operation: std::sync::Arc::new(StrategyAdmission::default()), source_read: std::sync::Arc::new(StrategyAdmission::default()), source_allowed: source_mode || std::env::var_os("METTEN_VERIFY_FD").is_none(), strategy_operation: std::sync::Arc::new(StrategyAdmission::default()), quitting: AtomicBool::new(false), exit_ready: AtomicBool::new(false), quit_error: std::sync::Mutex::new(None) });
+            let paper = paper::NativePaper::default();
+            let paper_stop = paper.stop_signal();
+            app.manage(Workspace { engine, #[cfg(target_os = "macos")] credentials: if source_mode { credential::Credentials::disabled() } else { credential::Credentials::setup() }, #[cfg(target_os = "macos")] providers: std::sync::Mutex::new(Some(coordinator)), #[cfg(target_os = "macos")] provider_credentials: std::sync::Mutex::new(Some(provider_credential::Credentials::new(provider_store))), source_handle: std::sync::Mutex::new(None), source_transport: std::sync::Arc::new((if source_mode {providers::transport::Transport::isolated()}else{providers::transport::Transport::new(providers::Environment::Production)}).map_err(|_| "Cannot prepare source transport")?), source_revocation: std::sync::Mutex::new(revocation), source_verifier: std::sync::Mutex::new(None), provider_operation: std::sync::Arc::new(StrategyAdmission::default()), source_read: std::sync::Arc::new(StrategyAdmission::default()), source_allowed: source_mode || std::env::var_os("METTEN_VERIFY_FD").is_none(), strategy_operation: std::sync::Arc::new(StrategyAdmission::default()), paper_operation: std::sync::Arc::new(StrategyAdmission::default()), paper_read: std::sync::Arc::new(StrategyAdmission::default()), paper:std::sync::Mutex::new(paper), paper_stop, quitting: AtomicBool::new(false), exit_ready: AtomicBool::new(false), quit_error: std::sync::Mutex::new(None) });
             {
                 let workspace = app.state::<Workspace>();
                 *workspace.source_revocation.lock().expect("source revocation poisoned") = workspace.providers.lock().expect("provider owner poisoned").as_ref().expect("source owner").revocation();
@@ -864,7 +966,7 @@ fn main() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![snapshot, control, credential, strategies, sources, provider_credential])
+        .invoke_handler(tauri::generate_handler![snapshot, control, credential, strategies, sources, provider_credential, paper])
         .build(context())
         .expect("Could not open the Metten application")
         .run(|app, event| match event {
@@ -1135,6 +1237,7 @@ mod permissions_tests {
             "strategies",
             "sources",
             "provider_credential",
+            "paper",
         ] {
             assert!(
                 authority

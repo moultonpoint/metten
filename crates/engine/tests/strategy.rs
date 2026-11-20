@@ -3409,3 +3409,161 @@ fn source_resynchronize_pair_does_not_count_or_cross_and_identity_stays_separate
             .is_some()
     );
 }
+
+#[test]
+fn paper_candidate_carries_exact_ask_identity_without_reclassifying_rule_qualification() {
+    let mut e = entered(current_rule(ask_below()));
+    let initial = e.snapshot().candidate.as_ref().unwrap().ask.clone();
+    assert_eq!(initial.binding_id, 1);
+    assert_eq!(initial.price, Decimal::parse("39").unwrap());
+    assert_eq!(initial.value_transaction, 2);
+    assert_eq!(initial.observation_number, 1);
+    assert_eq!(initial.valid_until_ms, 900001);
+    let mut blocked = objective();
+    blocked.safeguards.allowed = false;
+    let d = finish(&mut e, batch(2, 3, prices("25", "75", 2)), Some(blocked));
+    assert!(d.candidate.is_none());
+    assert_eq!(d.leaves[0].qualified_side, Some(Side::Yes));
+    assert!(!d.leaves[0].eligible);
+    let d = finish(&mut e, batch(3, 4, vec![]), Some(objective()));
+    let ask = d.candidate.unwrap().ask;
+    assert_eq!(ask.price, Decimal::parse("25").unwrap());
+    assert_eq!(ask.value_transaction, 3);
+    assert_eq!(ask.observation_number, 2);
+    let d = finish(
+        &mut e,
+        batch(4, 5, prices("25", "75", 3)),
+        Some(objective()),
+    );
+    let replacement = d.candidate.unwrap().ask;
+    assert_eq!(replacement.price, ask.price);
+    assert_ne!(replacement.value_transaction, ask.value_transaction);
+    assert_ne!(replacement.observation_number, ask.observation_number);
+    let d = finish(
+        &mut e,
+        batch(
+            5,
+            6,
+            vec![EvidenceChange::Resynchronize {
+                binding_id: 1,
+                value: Decimal::parse("25").unwrap(),
+            }],
+        ),
+        Some(objective()),
+    );
+    assert_eq!(d.candidate.unwrap().ask.value_transaction, 6);
+    let d = finish(
+        &mut e,
+        batch(6, 7, prices("45", "55", 4)),
+        Some(objective()),
+    );
+    assert!(d.candidate.is_none());
+    assert_eq!(d.leaves[0].qualified_side, None);
+}
+
+#[test]
+fn paper_witnesses_use_cached_values_identity_and_boolean_parent_proof() {
+    let condition = json!({"type":"any","conditions":[ask_below(),{"type":"compare","left":{"reference":"ask"},"comparison":"greater_than","right":{"value":"70","unit":"contract_cents"}}]});
+    let mut e = entered(current_rule(condition));
+    let d = finish(
+        &mut e,
+        batch(2, 3, prices("80", "20", 2)),
+        Some(objective()),
+    );
+    let w = &d.witnesses[0];
+    assert_eq!(w.observed.as_deref(), Some("80"));
+    assert_eq!(w.required.as_deref(), Some("70"));
+    assert_eq!(w.root_status, "true");
+    assert_eq!(w.status, "true");
+    assert_eq!(w.root_kind, "any");
+    assert_eq!(w.binding_id, Some(1));
+    assert_eq!(w.value_transaction.as_deref(), Some("3"));
+    assert_eq!(w.observation_number.as_deref(), Some("2"));
+    assert_eq!(w.evaluated_at_ms, "2");
+    assert!(w.parent_path.is_some());
+    let d = finish(
+        &mut e,
+        batch(
+            3,
+            4,
+            vec![EvidenceChange::Validity {
+                binding_id: 1,
+                valid_until_ms: 0,
+                reason: None,
+            }],
+        ),
+        Some(objective()),
+    );
+    assert_eq!(d.witnesses[0].status, "unavailable");
+    assert_eq!(d.witnesses[0].observed, None);
+    assert!(d.candidate.is_none());
+}
+
+#[test]
+fn paper_witness_cap_retains_primary_and_maximum_grammar_fits_serialized_bound() {
+    let mut r = current_rule(json!({"type":"all","conditions":vec![ask_below();32]}));
+    let e = entered(r.clone());
+    assert_eq!(e.snapshot().witnesses.len(), 21);
+    assert!(e.snapshot().more_evidence);
+    for w in &e.snapshot().witnesses {
+        assert!(serde_json::to_vec(w).unwrap().len() <= 2048);
+    }
+    let id = "x".repeat(64);
+    let mut condition = json!({"type":"compare","left":{"reference":id},"comparison":"less_than","right":{"value":"999999999999.999999","unit":"contract_cents"}});
+    for _ in 0..11 {
+        condition = json!({"type":"held_for","duration_seconds":1,"condition":condition});
+    }
+    r["inputs"][0]["id"] = json!(id);
+    r["purchase_options"][0]["id"] = json!(id);
+    r["purchase_options"][0]["when"] = condition;
+    let mut c = context();
+    for b in &mut c.bindings {
+        b.input_id = id.clone();
+    }
+    let mut e = Evaluator::new(ValidatedStrategy::parse(&r.to_string()).unwrap(), c).unwrap();
+    let mut changes = prices("39", "61", u64::MAX);
+    changes.extend([
+        lease(1),
+        lease(2),
+        EvidenceChange::MarketBoundary {
+            market_id: "one".into(),
+        },
+    ]);
+    let d = finish(&mut e, batch(1, 1, changes), Some(objective()));
+    for w in &d.witnesses {
+        let bytes = serde_json::to_vec(w).unwrap().len();
+        assert!(bytes <= 2048, "{bytes}: {w:?}");
+    }
+}
+
+#[test]
+fn paper_temporal_witnesses_retain_actual_duration_count_and_counting_input() {
+    let mut held = entered(current_rule(
+        json!({"type":"held_for","duration_seconds":1,"condition":ask_below()}),
+    ));
+    let d = finish(
+        &mut held,
+        batch(2, 3, prices("80", "20", 2)),
+        Some(objective()),
+    );
+    let w = &d.witnesses[0];
+    assert_eq!(w.kind, "held_for");
+    assert_eq!(w.observed.as_deref(), Some("0"));
+    assert_eq!(w.required.as_deref(), Some("1"));
+    assert_eq!(w.status, "false");
+    let mut counted = entered(current_rule(
+        json!({"type":"confirmed_updates","count":2,"count_input":"ask","condition":ask_below()}),
+    ));
+    let d = finish(
+        &mut counted,
+        batch(2, 3, prices("80", "20", 2)),
+        Some(objective()),
+    );
+    let w = &d.witnesses[0];
+    assert_eq!(w.kind, "confirmed_updates");
+    assert_eq!(w.left_reference.as_deref(), Some("ask"));
+    assert_eq!(w.observed.as_deref(), Some("0"));
+    assert_eq!(w.required.as_deref(), Some("2"));
+    assert_eq!(w.binding_id, Some(1));
+    assert_eq!(w.observation_number.as_deref(), Some("2"));
+}

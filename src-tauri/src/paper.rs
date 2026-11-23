@@ -643,6 +643,19 @@ impl Drop for StopInput {
     }
 }
 
+/// The check's first session loses every venue reply and lookup, so it must quit with the
+/// purchase unresolved and reconcile it from the venue's record after reopening.
+struct Unanswered(Box<dyn Venue>);
+impl Venue for Unanswered {
+    fn submit(&mut self, order: &Order) -> Option<Fill> {
+        let _ = self.0.submit(order);
+        None
+    }
+    fn lookup(&mut self, _: &str) -> Option<(Order, Fill)> {
+        None
+    }
+}
+
 fn check(
     path: &std::path::Path,
     cancel: &mut dyn FnMut() -> Result<(), Failure>,
@@ -662,8 +675,12 @@ fn check(
         return Err(Failure::new("invalid_workspace"));
     }
     cancel()?;
-    let engine =
-        Arc::new(Engine::open(path.join("session.sqlite")).map_err(|_| Failure::new("storage"))?);
+    let engine = Arc::new(
+        Engine::open_with_venue(path.join("session.sqlite"), |venue| {
+            Box::new(Unanswered(venue))
+        })
+        .map_err(|_| Failure::new("storage"))?,
+    );
     let text = include_str!("../../examples/learning.json");
     let version = match engine
         .strategies(metten_engine::StrategyRequest::Save {
@@ -694,8 +711,12 @@ fn check(
         cancel()?;
         state.advance_manual(at, &stopped)?;
     }
+    // The reply is lost: nothing is debited, the reservation stays and the purchase is checked.
     let pending = invoke(engine.clone(), &mut state, json!({"operation":"snapshot"}))?;
-    if pending["run"]["cash"] != "9736870000" {
+    if pending["run"]["cash"] != "10000000000"
+        || pending["run"]["reserved"] != "263130000"
+        || pending["run"]["recovery"]["state"] != "dispatched"
+    {
         return Err(Failure::new("unconfirmed"));
     }
     let history = invoke(
@@ -709,9 +730,9 @@ fn check(
     if rows.len() != 1
         || rows[0]["source_market_id"] != "KXBTC15M-PAPER-NEXT"
         || rows[0]["side"] != "no"
-        || rows[0]["filled_quantity"] != "10"
-        || rows[0]["cost"] != "250000000"
-        || rows[0]["fee"] != "13130000"
+        || rows[0]["attempt_state"] != "dispatched"
+        || rows[0]["reason"] != "checking_purchase"
+        || rows[0]["filled_quantity"] != "0"
         || !rows[0]["settled_net"].is_null()
     {
         return Err(Failure::new("unconfirmed"));
@@ -731,10 +752,24 @@ fn check(
     let engine =
         Arc::new(Engine::open(path.join("session.sqlite")).map_err(|_| Failure::new("storage"))?);
     let mut state = NativePaper::manual();
+    // Startup reconciliation confirms the original order from the venue; the run stays stopped.
     let reopen = invoke(engine.clone(), &mut state, json!({"operation":"snapshot"}))?;
+    let recovered = invoke(
+        engine.clone(),
+        &mut state,
+        json!({"operation":"history","run_id":run}),
+    )?;
+    let row = &recovered["page"]["markets"][0];
     if reopen["run"]["cash"] != "9736870000"
+        || reopen["run"]["reserved"] != "0"
         || reopen["run"]["control_state"] != "stopped"
         || reopen["run"]["virtual_frontier_ms"] != "61000"
+        || reopen["run"]["recovery"]["state"] != "full"
+        || reopen["run"]["recovery"]["interrupted"] != "no_outcome"
+        || row["filled_quantity"] != "10"
+        || row["cost"] != "250000000"
+        || row["fee"] != "13130000"
+        || row["attempt_count"] != "1"
     {
         return Err(Failure::new("unconfirmed"));
     }
@@ -808,7 +843,7 @@ fn check(
         .stop_and_save()
         .map_err(|_| Failure::new("storage"))?;
     Ok(
-        json!({"protocol":"metten-paper-check-v1","kind":"paper_check","origin":"synthetic_controlled","pending_debit":"263130000","settled_cash":"10736870000","settled_net":"736870000","partial_fill_quantity":"100","checks":["native_decode_dispatch","shared_learning_evaluator","finite_full_partial","exact_fee_settlement","numeric_identity_history","stopped_reopen","settlement_idempotency"]}),
+        json!({"protocol":"metten-paper-check-v1","kind":"paper_check","origin":"synthetic_controlled","pending_debit":"263130000","settled_cash":"10736870000","settled_net":"736870000","partial_fill_quantity":"100","recovered_attempt_state":"full","checks":["native_decode_dispatch","shared_learning_evaluator","finite_full_partial","exact_fee_settlement","numeric_identity_history","stopped_reopen","settlement_idempotency","lost_reply_reconciliation"]}),
     )
 }
 
@@ -845,6 +880,7 @@ mod tests {
         let result = check(&workspace.0, &mut || Ok(())).unwrap();
         assert_eq!(result["settled_cash"], "10736870000");
         assert_eq!(result["partial_fill_quantity"], "100");
+        assert_eq!(result["recovered_attempt_state"], "full");
     }
     #[test]
     fn headless_check_rejects_existing_and_symlink_workspaces_and_cancels_before_open() {

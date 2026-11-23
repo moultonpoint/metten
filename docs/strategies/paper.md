@@ -24,17 +24,18 @@ The pinned `controlled_best_ask_finite_ioc_v2` simulator treats each attempt as 
 - Resume purchases requires newly accepted current execution evidence; a stale pre-pause book cannot purchase.
 - Stop after this market completes the entered market and refuses the next. Before entry, it stops without counting a market.
 - Quit fences purchases before native waits, joins playback and asks the engine to save stopped/unresolved state. A failed save cancels quit and retains confirmed history.
-- Reopen never resumes purchases or reconstructs an interrupted intent as a fill. Unconfirmed purchase state remains blocked; a confirmed holding may use the explicit saved-manifest settlement action.
+- If a purchase reply is lost, Now shows “Trading paused — checking a purchase”. Metten keeps the reservation and sends nothing else while it looks up that exact order at the venue. It then reports the actual result, and later history keeps the interruption and result. A missing or unreadable venue record never counts as zero. Resume is refused while a check is outstanding; a Pause you made stays in force afterward.
+- Quit checks in-progress purchases first. Reopen looks them up again but never resumes purchases or rebuilds a fill from saved request details. A purchase still unknown keeps purchases and new runs blocked. **Resolve remaining synthetic outcome** retries the check, then settles each final holding once from the saved manifest.
 
 The main explanation prioritizes unresolved facts, confirmed full, partial and zero outcomes and specific purchase blocks/rule evidence. An unavailable input is not false, an attempt is not a fill, and pending settlement is not a loss. Observed values are labeled with their time; sparse retained observations prove no whole-market maximum or continuous condition history.
 
 ## Workspace and verification limits
 
-This implementation migrates SQLite to schema 5, preserving session, strategy and earlier paper records; older binaries refuse the migrated workspace. Never point verification at real financial records. The headless check uses a new owned disposable workspace and no Keychain, provider, GUI or network setup:
+This implementation migrates SQLite to schema 6, preserving session, strategy and earlier paper records; older binaries refuse the migrated workspace. Never point verification at real financial records. The headless check uses a new owned disposable workspace and no Keychain, provider, GUI or network setup:
 
 ```sh
 npm run tauri build -- --bundles app
 python3 scripts/verify-paper.py target/release/bundle/macos/Metten.app
 ```
 
-See [issue-6 evidence](../verification/issue-6.md) for actual commands/results, source identity and remaining risk. No paper check establishes live fees/fills, production source usability, capacity, physical power-loss guarantees, distribution signing or notarization.
+See [issue-6 evidence](../verification/issue-6.md) for actual commands/results, source identity and remaining risk. The check also loses the first purchase reply, quits with that purchase unresolved and confirms it from the venue record after reopening. No paper check establishes live order acceptance, lookup or deduplication, live fees/fills, production source usability, capacity, physical power-loss guarantees, distribution signing or notarization.

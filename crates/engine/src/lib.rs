@@ -269,8 +269,20 @@ fn recording_error(detail: &str) -> String {
 impl Engine {
     /// The caller selects a local, nonsecret workspace; the renderer cannot select paths.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
+        Self::open_with_venue(path, |venue| venue)
+    }
+
+    /// Opens with the workspace's controlled paper venue, which `wrap` may observe or interrupt
+    /// (tests and the packaged check lose replies or exit around it).
+    pub fn open_with_venue(
+        path: impl AsRef<Path>,
+        wrap: impl FnOnce(Box<dyn paper::Venue>) -> Box<dyn paper::Venue>,
+    ) -> Result<Self, String> {
         let (mut recorder, settings) =
             Recorder::open(path.as_ref()).map_err(|e| recording_error(&e))?;
+        let mut venue = wrap(Box::new(
+            storage::PaperVenue::open(path.as_ref()).map_err(|e| recording_error(&e))?,
+        ));
         recorder.paper_validate_balances().map_err(|_| {
             recording_error(
                 "Paper account integrity could not be established. Saved records are retained.",
@@ -279,16 +291,25 @@ impl Engine {
         recorder
             .paper_stop_all()
             .map_err(|_| recording_error("Paper stopped boundary was not confirmed."))?;
-        let previous = recorder.latest().map_err(|e| recording_error(&e))?;
-        let tick = previous.first().map_or(0, |r| r.tick);
-        // Every open records a stopped boundary, including after an unexpected exit.
-        let history = recorder
-            .append(Status::Stopped, tick, "Workspace opened — stopped")
-            .map_err(|e| recording_error(&e))?;
-        let initial_paper = recorder
-            .paper_latest()
-            .map_err(|_| recording_error("Paper state could not be read."))?;
         let recorder = Arc::new(Mutex::new(recorder));
+        // Crash recovery looks up unconfirmed purchases without sending; runs stay stopped. A
+        // failure leaves the attempt unconfirmed and its run visibly unresolved.
+        let _ = paper::reconcile(&recorder, venue.as_mut(), None, "restart");
+        let (history, initial_paper) = {
+            let mut recorder = recorder
+                .lock()
+                .map_err(|_| recording_error("Recorder unavailable."))?;
+            let previous = recorder.latest().map_err(|e| recording_error(&e))?;
+            let tick = previous.first().map_or(0, |r| r.tick);
+            // Every open records a stopped boundary, including after an unexpected exit.
+            let history = recorder
+                .append(Status::Stopped, tick, "Workspace opened — stopped")
+                .map_err(|e| recording_error(&e))?;
+            let initial_paper = recorder
+                .paper_latest()
+                .map_err(|_| recording_error("Paper state could not be read."))?;
+            (history, initial_paper)
+        };
         let shared = Arc::new(Mutex::new(Shared {
             snapshot: Snapshot {
                 running: false,
@@ -322,11 +343,8 @@ impl Engine {
                         let starting = matches!(&job, paper::Job::Start(_));
                         let resuming =
                             matches!(&job, paper::Job::Control(_, paper::Control::Resume));
-                        let mut result = paper_owner.handle(
-                            job,
-                            &mut writer.lock().expect("recorder poisoned"),
-                            &worker_fence,
-                        );
+                        let mut result =
+                            paper_owner.handle(job, &writer, venue.as_mut(), &worker_fence);
                         #[cfg(test)]
                         {
                             let barrier = state.lock().unwrap().paper_publication_barrier.take();
@@ -442,10 +460,10 @@ impl Engine {
                         Operation::Stop => (Status::Stopped, tick, "Workspace closed — stopped"),
                         Operation::Paper => unreachable!(),
                     };
+                    let paper_stopped = stopping.then(|| paper_owner.stop(&writer, venue.as_mut()));
                     let mut recorder = writer.lock().expect("recorder poisoned");
-                    let result = if stopping {
-                        paper_owner
-                            .stop(&mut recorder)
+                    let result = if let Some(paper_stopped) = paper_stopped {
+                        paper_stopped
                             .map_err(|_| "Paper stopped state is not confirmed saved.".to_string())
                             .and_then(|()| {
                                 recorder
@@ -920,8 +938,8 @@ mod tests {
             let context = first.context.unwrap();
             let db = rusqlite::Connection::open(&path).unwrap();
             if unresolved {
-                // A durable intent with no terminal outcome is an unresolved purchase.
-                db.execute("INSERT INTO paper_attempts(run_id,paper_market_id,proposal_ordinal,side,quantity,price,available_millionths,evidence_identity,intent_virtual_ms,reserved,state) SELECT run_id,paper_market_id,1,'no',10,25000000,10000000,'{}',0,263130000,'intent' FROM paper_markets WHERE run_id=?1 AND source_market_id='KXBTC15M-PAPER-NEXT'",[context.run_id]).unwrap();
+                // A possibly sent order the venue cannot find is an unresolved purchase.
+                db.execute("INSERT INTO paper_attempts(run_id,paper_market_id,proposal_ordinal,side,quantity,price,available_millionths,evidence_identity,intent_virtual_ms,reserved,dispatched_virtual_ms,state) SELECT run_id,paper_market_id,1,'no',10,25000000,10000000,'{}',0,263130000,0,'dispatched' FROM paper_markets WHERE run_id=?1 AND source_market_id='KXBTC15M-PAPER-NEXT'",[context.run_id]).unwrap();
                 db.execute(
                     "UPDATE paper_runs SET reserved=263130000 WHERE run_id=?1",
                     [context.run_id],
@@ -978,7 +996,7 @@ mod tests {
                     db.query_row("SELECT state FROM paper_attempts", [], |row| row
                         .get::<_, String>(0))
                         .unwrap(),
-                    "intent"
+                    "dispatched"
                 );
                 assert_eq!(
                     db.query_row("SELECT count(*) FROM paper_settlements", [], |row| row
@@ -993,7 +1011,7 @@ mod tests {
                         .code,
                     "unresolved"
                 );
-                // Settlement guards the durable intent even if a control row is inconsistent.
+                // Settlement guards the unconfirmed order even if a control row is inconsistent.
                 db.execute(
                     "UPDATE paper_runs SET control_state='stopped' WHERE run_id=?1",
                     [context.run_id],

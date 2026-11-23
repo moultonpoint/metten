@@ -28,7 +28,7 @@ class PaperRunner(unittest.TestCase):
 from pathlib import Path
 workspace=Path(sys.argv[2])
 db=sqlite3.connect(workspace/'session.sqlite')
-db.executescript("PRAGMA user_version=5; CREATE TABLE paper_runs(run_id INTEGER,cash INTEGER); INSERT INTO paper_runs VALUES(1,10736870000),(2,17368750000); CREATE TABLE paper_settlements(settlement_id INTEGER,payout INTEGER,net INTEGER); INSERT INTO paper_settlements VALUES(1,1000000000,736870000),(2,10000000000,7368750000); CREATE TABLE paper_attempts(attempt_id INTEGER,state TEXT,filled_quantity INTEGER,cost INTEGER,fee INTEGER); INSERT INTO paper_attempts VALUES(1,'full',10,250000000,13130000),(2,'partial',100,2500000000,131250000);")
+db.executescript("PRAGMA user_version=6; CREATE TABLE paper_runs(run_id INTEGER,cash INTEGER); INSERT INTO paper_runs VALUES(1,10736870000),(2,17368750000); CREATE TABLE paper_settlements(settlement_id INTEGER,payout INTEGER,net INTEGER); INSERT INTO paper_settlements VALUES(1,1000000000,736870000),(2,10000000000,7368750000); CREATE TABLE paper_attempts(attempt_id INTEGER,state TEXT,filled_quantity INTEGER,cost INTEGER,fee INTEGER,interrupted TEXT); INSERT INTO paper_attempts VALUES(1,'full',10,250000000,13130000,'no_outcome'),(2,'partial',100,2500000000,131250000,NULL); CREATE TABLE paper_venue_orders(client_order_id TEXT,filled_quantity INTEGER); INSERT INTO paper_venue_orders VALUES('metten-paper-1-2-1',10),('metten-paper-2-4-1',100);")
 db.close()
 print(json.dumps(dict(protocol='metten-paper-check-v1',kind='paper_check',origin='synthetic_controlled',workspace=str(workspace))))
 ''')

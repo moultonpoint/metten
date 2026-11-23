@@ -886,6 +886,28 @@ fn public_engine_start_uuid_rejects_conflicting_market_identity_and_reopen_check
 }
 
 #[test]
+fn reopen_refuses_a_settlement_for_a_market_with_no_fills() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("paper.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    engine.paper_start(scenario(saved(&engine))).unwrap();
+    engine.stop_and_save().unwrap();
+    drop(engine);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    // Payout 0 leaves cash consistent, so only the settlement check can catch it.
+    assert_eq!(db.execute("INSERT INTO paper_settlements(run_id,paper_market_id,outcome_id,outcome_revision,winning_side,effective_virtual_ms,held_quantity,payout,net,close_day) SELECT run_id,paper_market_id,'tampered','synthetic_final_v1','yes',0,1,0,0,close_day FROM paper_markets LIMIT 1", []).unwrap(), 1);
+    drop(db);
+    assert!(Engine::open(&path).is_err());
+    let db = rusqlite::Connection::open(path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT outcome_id FROM paper_settlements", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "tampered"
+    );
+}
+
+#[test]
 fn public_engine_price_refusal_keeps_the_first_specific_check_at_market_end() {
     let directory = tempfile::tempdir().unwrap();
     let engine = Engine::open(directory.path().join("paper.sqlite")).unwrap();

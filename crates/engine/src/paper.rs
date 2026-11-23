@@ -482,13 +482,13 @@ impl Owner {
         let include_bindings = matches!(&job, Job::Start(_) | Job::Context(_));
         let settlement_check = matches!(&job, Job::CheckSettlement(_));
         let mut created_context = false;
-        // Only the run this job addresses may be closed by its failure; a Go addresses the open
-        // run only by repeating that run's own Go id.
-        let target = match &job {
+        // Only the run this job addresses may be closed by its failure; a Go addresses an open
+        // run with the same Go id, or the run it creates.
+        let mut target = match &job {
             Job::Start(start) => self
                 .run
                 .as_ref()
-                .filter(|run| run.start.start_uuid == start.start_uuid)
+                .filter(|run| run.open && run.start.start_uuid == start.start_uuid)
                 .map(|run| run.id),
             Job::Input(input) => Some(input.context.run_id),
             Job::Control(id, _) | Job::Context(id) | Job::CheckSettlement(id) => Some(*id),
@@ -523,6 +523,7 @@ impl Owner {
                         return Err(Failure::new("unsupported_input"));
                     }
                     let (id, existing) = recorder.paper_prepare_id(&start.start_uuid)?;
+                    target = Some(id);
                     let prepared = if existing {
                         None
                     } else {

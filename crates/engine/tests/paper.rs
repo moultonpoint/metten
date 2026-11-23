@@ -1182,6 +1182,27 @@ fn failed_retry_of_the_open_runs_own_go_id_still_fences_that_run() {
 }
 
 #[test]
+fn failed_retry_of_a_stopped_runs_go_id_leaves_it_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+    let mut first = scenario(saved(&engine));
+    let run = engine.paper_start(first.clone()).unwrap().summary.run_id;
+    let run = run.parse().unwrap();
+    engine.paper_control(run, Control::StopAfterMarket).unwrap();
+    let before = engine.paper_summary(run).unwrap();
+    assert_eq!(before.control_state, "stopped");
+    assert_eq!(before.error_code, None);
+    let mut retry = first.clone();
+    retry.strategy_version_id = 999;
+    assert_eq!(engine.paper_start(retry).unwrap_err().code, "storage");
+    assert_eq!(engine.paper_summary(run).unwrap(), before);
+    first.start_uuid = "00000000-0000-4000-8000-000000000002".into();
+    let fresh = engine.paper_start(first).unwrap();
+    assert_ne!(fresh.summary.run_id, before.run_id);
+    assert!(fresh.context.is_some());
+}
+
+#[test]
 fn invalid_source_clock_is_rejected_before_pending_receipt_and_can_be_corrected() {
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();

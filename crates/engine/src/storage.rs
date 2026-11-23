@@ -836,7 +836,7 @@ impl Recorder {
         }
         tx.execute("UPDATE paper_attempts SET state=?3,filled_quantity=?4,cost=?5,fee=?6,dispatched_virtual_ms=?7,outcome_id=?8 WHERE run_id=?1 AND attempt_id=?2",params![run,attempt,next,filled,cost,fee,if outcome.is_some(){Some(at)}else{None},if outcome.is_some(){Some(format!("paper-attempt-{attempt}"))}else{None}]).map_err(paper_storage)?;
         tx.execute("UPDATE paper_runs SET cash=cash-?2,reserved=reserved-?3,revision=revision+1 WHERE run_id=?1",params![run,debit,reservation]).map_err(paper_storage)?;
-        tx.execute("UPDATE paper_markets SET reason=CASE (SELECT coalesce(sum(a.filled_quantity),0) FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state IN ('full','partial')) WHEN 0 THEN CASE WHEN ?3='zero' THEN 'insufficient_quantity' ELSE 'canceled_before_dispatch' END WHEN (SELECT quantity FROM paper_runs WHERE run_id=?1) THEN 'confirmed_full_fill_pending_settlement' ELSE 'confirmed_partial_fill_pending_settlement' END WHERE run_id=?1 AND paper_market_id=(SELECT paper_market_id FROM paper_attempts WHERE attempt_id=?2)",params![run,attempt,next]).map_err(paper_storage)?;
+        tx.execute("UPDATE paper_markets SET reason=CASE (SELECT coalesce(sum(a.filled_quantity),0) FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state IN ('full','partial')) WHEN 0 THEN CASE WHEN EXISTS(SELECT 1 FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state='zero') THEN 'insufficient_quantity' ELSE 'canceled_before_dispatch' END WHEN (SELECT quantity FROM paper_runs WHERE run_id=?1) THEN 'confirmed_full_fill_pending_settlement' ELSE 'confirmed_partial_fill_pending_settlement' END WHERE run_id=?1 AND paper_market_id=(SELECT paper_market_id FROM paper_attempts WHERE attempt_id=?2)",params![run,attempt]).map_err(paper_storage)?;
         tx.commit().map_err(paper_storage)?;
         Ok(())
     }
@@ -1413,5 +1413,48 @@ mod paper_transaction_tests {
             "input_conflict"
         );
         assert_eq!(recorder.paper_summary(1).unwrap(), settled);
+        // Canceling a retry after a confirmed zero fill keeps the zero fill's reason.
+        let market = &start.markets[0];
+        recorder
+            .paper_market_progress(1, &market.market_id, "eligible", true)
+            .unwrap();
+        let mut candidate = Candidate {
+            market_id: market.market_id.clone(),
+            ..candidate
+        };
+        let mut book = Book {
+            source_market_id: market.market_id.clone(),
+            source_contract_id: market.contract_id.clone(),
+            available_millionths: 0,
+            ..book
+        };
+        let zero = Some(Fill::Zero {
+            available_millionths: 0,
+        });
+        let attempt = recorder
+            .paper_intent(1, &candidate, &book, 903000)
+            .unwrap()
+            .unwrap();
+        recorder
+            .paper_finish_attempt(1, attempt, 903000, zero)
+            .unwrap();
+        candidate.ask.observation_number = 2;
+        book.observation_number = 2;
+        let attempt = recorder
+            .paper_intent(1, &candidate, &book, 904000)
+            .unwrap()
+            .unwrap();
+        recorder
+            .paper_finish_attempt(1, attempt, 904000, None)
+            .unwrap();
+        let reason: String = recorder
+            .connection
+            .query_row(
+                "SELECT reason FROM paper_markets WHERE run_id=1 AND source_market_id=?1",
+                [&market.market_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reason, "insufficient_quantity");
     }
 }

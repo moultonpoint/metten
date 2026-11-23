@@ -105,6 +105,19 @@ fn numeric_market_rows_keep_exact_source_identity_and_enforce_run_ownership() {
     assert!(db.execute("INSERT INTO paper_evidence(run_id,paper_market_id,evidence_key,first_virtual_ms,last_virtual_ms,first_transaction,last_transaction,first_witness,latest_witness) VALUES(1,?1,'one-too-many',0,0,0,0,'{}','{}')",[rows[0].0]).is_err());
     db.execute("INSERT INTO paper_evidence(run_id,paper_market_id,evidence_key,first_virtual_ms,last_virtual_ms,first_transaction,last_transaction,first_witness,latest_witness) VALUES(1,?1,'reason-0',0,1,0,1,'{}','{}') ON CONFLICT(paper_market_id,evidence_key) DO UPDATE SET last_virtual_ms=excluded.last_virtual_ms,last_transaction=excluded.last_transaction,repetitions=repetitions+1",[rows[0].0]).unwrap();
     assert_eq!(db.query_row("SELECT repetitions FROM paper_evidence WHERE paper_market_id=?1 AND evidence_key='reason-0'",[rows[0].0],|r|r.get::<_,i64>(0)).unwrap(),2);
+    // After a confirmed 4-of-10 NO fill, only one NO attempt for the 6 remaining may be open.
+    db.execute("INSERT INTO paper_attempts(run_id,paper_market_id,proposal_ordinal,side,quantity,price,available_millionths,evidence_identity,intent_virtual_ms,reserved,dispatched_virtual_ms,state,outcome_id,filled_quantity,cost,fee) VALUES(2,?1,1,'no',10,25000000,4000000,'{}',61000,263130000,61000,'partial','outcome-2',4,100000000,5250000)",[rows[1].0]).unwrap();
+    let retry = |ordinal: i64, side: &str, quantity: i64| {
+        db.execute("INSERT INTO paper_attempts(run_id,paper_market_id,proposal_ordinal,side,quantity,price,available_millionths,evidence_identity,intent_virtual_ms,reserved,state) VALUES(2,?1,?2,?3,?4,25000000,6000000,'{}',62000,0,'intent')",rusqlite::params![rows[1].0, ordinal, side, quantity]).map_err(|e| e.to_string())
+    };
+    let refused = |e: String| e.contains("unfilled locked objective");
+    assert!(retry(2, "yes", 6).is_err_and(refused), "side lock");
+    assert!(retry(2, "no", 10).is_err_and(refused), "remainder only");
+    retry(2, "no", 6).unwrap();
+    assert!(
+        retry(3, "no", 6).is_err_and(refused),
+        "one unresolved attempt"
+    );
 }
 
 #[test]

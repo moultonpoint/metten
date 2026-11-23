@@ -14,6 +14,7 @@ pub struct Connection {
     socket: Option<Socket>,
     provider: Provider,
     fence: Fence,
+    #[cfg(test)]
     generation: u64,
     retry: Arc<std::sync::Mutex<budget::Retry>>,
     _memory: tokio::sync::OwnedSemaphorePermit,
@@ -134,6 +135,7 @@ impl Transport {
         format!("{}{path}", self.environment.rest())
     }
     /// Actual transport polls: [REST reads, WebSocket handshakes, control writes].
+    #[cfg(test)]
     pub fn attempts(&self, provider: Provider) -> Result<[u64; 3], Failure> {
         Ok(self.budgets[provider.index()]
             .lock()
@@ -167,6 +169,7 @@ impl Transport {
             budget.data_messages,
         ])
     }
+    #[cfg(test)]
     pub fn retry_usable(&self, provider: Provider, now: Instant) -> Result<(), Failure> {
         self.retries[provider.index()]
             .lock()
@@ -411,6 +414,7 @@ impl Transport {
             socket: Some(socket),
             provider,
             fence: fence.clone(),
+            #[cfg(test)]
             generation,
             retry: self.retries[provider.index()].clone(),
             _memory: memory,
@@ -480,6 +484,7 @@ pub async fn test_body(url: &str) -> Result<memory::Bytes, Failure> {
         .unwrap();
     read_body(&client, url, memory::Memory::default().reserve(MAX_BYTES)?).await
 }
+#[cfg(test)]
 impl Transport {
     pub async fn send(
         &self,
@@ -619,6 +624,7 @@ fn websocket_failure(error: tokio_tungstenite::tungstenite::Error) -> Failure {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn send_control<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     socket: &mut WebSocketStream<S>,
     text: String,

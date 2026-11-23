@@ -108,6 +108,7 @@ impl SourceWorker {
             lease: None,
         })
     }
+    #[cfg(test)]
     pub fn tokens(&self) -> [metten_engine::sources::StreamToken; 6] {
         SOURCE_STREAMS.map(|s| self.state.token(s))
     }
@@ -918,9 +919,6 @@ impl SourceHandle {
     pub fn enabled(&self) -> [bool; 4] {
         self.desired.borrow().enabled
     }
-    pub fn memory(&self) -> &memory::Memory {
-        &self.memory
-    }
     pub fn elapsed_ms(&self) -> u64 {
         u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
@@ -1570,6 +1568,7 @@ pub struct SourceHandle {
     fixtures: [watch::Sender<Option<Fence>>; 3],
     epoch: Instant,
     memory: memory::Memory,
+    #[cfg(test)]
     pub(super) schedule: watch::Sender<Option<ScheduleLoss>>,
     controls: [ControlSlot; 3],
     outbound: [mpsc::Sender<Control>; 3],
@@ -1587,6 +1586,7 @@ impl Coordinator {
         let base_charge = source._base_charge.clone();
         let memory = source.memory.clone();
         let epoch = source.epoch;
+        #[cfg(test)]
         let schedule = source.schedule.clone();
         let channels: [_; 3] = std::array::from_fn(|_| mpsc::channel(7));
         let mut receivers: [ControlSlot; 3] =
@@ -1785,6 +1785,7 @@ impl Coordinator {
             latest,
             memory,
             epoch,
+            #[cfg(test)]
             schedule,
             command,
             controls: receivers,
@@ -2457,6 +2458,7 @@ impl SourceWorker {
         source.enabled = [false; 4];
         Ok(source)
     }
+    #[cfg(test)]
     pub fn prepare(
         strategy: &metten_engine::strategy::ValidatedStrategy,
         markets: &[metten_engine::strategy::MarketDescriptor],

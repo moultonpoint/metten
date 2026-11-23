@@ -158,7 +158,9 @@ include failed transport attempts and retries, but never claim server receipt. H
 transient read/control-write failures use one persistent provider retry owner: 5-second exponential
 start, capped at 60 seconds with bounded positive jitter; five failed attempts
 enter a queryable slow-retry state with at most one attempt/minute. Thirty seconds
-of verified usable data resets it; a handshake never does. Socket loss resets
+of verified usable data is meant to reset it; a handshake never does. Current
+limitation: no production path calls that reset yet, so slow retry lasts until restart
+([#77](https://github.com/moultonpoint/metten/issues/77)). Socket loss resets
 the usable-data interval before later recovery. Intentional cancellation resets
 that interval without incrementing transient failures; malformed protocol remains
 terminal. Each failed socket operation is recorded once, then closed/revoked. Denial/protocol/capacity
@@ -220,7 +222,7 @@ reason counters rather than an unbounded event log.
 ## Step-4 read-only source owner
 
 [providers/source.rs](providers/source.rs) owns `SourceWorker`, the sole native
-writer of `SourceState`, and its derived `SourceView`. `prepare` borrows a validated
+writer of `SourceState`, and its derived `SourceView`. `prepare` (test-only) borrows a validated
 strategy, retains requirements and at most two normalized market descriptors, and
 uses ordinary unsupported capabilities. `Coordinator::start_sources` uses the
 existing single worker; `start_provider` explicitly starts one of the three fixed

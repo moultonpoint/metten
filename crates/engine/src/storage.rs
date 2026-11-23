@@ -60,7 +60,7 @@ impl Recorder {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version > 5 {
+        if version > 6 {
             return Err(
                 "This workspace was created by a newer Metten. Open it with that version.".into(),
             );
@@ -123,6 +123,11 @@ impl Recorder {
                 .map_err(|_| {
                     "Paper workspace migration failed; original records are preserved.".to_string()
                 })?;
+        }
+        if version < 6 {
+            connection.execute_batch(PAPER_RECOVERY).map_err(|_| {
+                "Paper workspace migration failed; original records are preserved.".to_string()
+            })?;
         }
         connection
             .execute_batch("COMMIT")
@@ -500,6 +505,144 @@ BEGIN SELECT RAISE(ABORT,'Paper attempt must retry only the unfilled locked obje
 PRAGMA user_version=5;
 ";
 
+// Schema 6 adds recovery: an intent becomes `dispatched` (its pre-send marker) before any send,
+// so an unmarked intent provably never left. Schema 5 had no marker, so its unconfirmed attempts
+// may have been sent and become `unknown`. Only the venue's record of that exact order makes a
+// possibly sent attempt terminal. The venue table is the controlled exchange's own durable record,
+// written through a separate connection, never by engine accounting transactions.
+const PAPER_RECOVERY: &str = "
+ALTER TABLE paper_attempts ADD COLUMN interrupted TEXT CHECK(interrupted IN ('no_outcome','restart','legacy'));
+DROP TRIGGER paper_attempt_fixed; DROP TRIGGER paper_attempt_objective;
+UPDATE paper_attempts SET state='unknown',interrupted='legacy' WHERE state IN ('intent','dispatched','unknown');
+UPDATE paper_markets SET reason='checking_purchase',evidence_revision=evidence_revision+1 WHERE paper_market_id IN (SELECT paper_market_id FROM paper_attempts WHERE interrupted='legacy');
+CREATE TRIGGER paper_attempt_fixed BEFORE UPDATE ON paper_attempts
+WHEN NEW.run_id IS NOT OLD.run_id OR NEW.paper_market_id IS NOT OLD.paper_market_id
+ OR NEW.proposal_ordinal IS NOT OLD.proposal_ordinal OR NEW.side IS NOT OLD.side
+ OR NEW.quantity IS NOT OLD.quantity OR NEW.price IS NOT OLD.price
+ OR NEW.available_millionths IS NOT OLD.available_millionths OR NEW.evidence_identity IS NOT OLD.evidence_identity
+ OR NEW.intent_virtual_ms IS NOT OLD.intent_virtual_ms OR NEW.reserved IS NOT OLD.reserved
+ OR (OLD.interrupted IS NOT NULL AND NEW.interrupted IS NOT OLD.interrupted)
+ OR (OLD.dispatched_virtual_ms IS NOT NULL AND NEW.dispatched_virtual_ms IS NOT OLD.dispatched_virtual_ms)
+ OR (NEW.state IS NOT OLD.state AND NOT ((OLD.state='intent' AND NEW.state IN ('dispatched','canceled'))
+    OR (OLD.state IN ('dispatched','unknown') AND NEW.state IN ('full','partial','zero'))))
+ OR (NEW.state IN ('intent','dispatched','unknown','canceled') AND (NEW.outcome_id IS NOT NULL OR NEW.filled_quantity!=0 OR NEW.cost!=0 OR NEW.fee!=0))
+ OR (NEW.state IN ('intent','canceled') AND NEW.dispatched_virtual_ms IS NOT NULL)
+ OR (NEW.state='dispatched' AND NEW.dispatched_virtual_ms IS NULL)
+ OR (OLD.state IN ('full','partial','zero','canceled') AND (NEW.outcome_id IS NOT OLD.outcome_id
+    OR NEW.filled_quantity IS NOT OLD.filled_quantity OR NEW.cost IS NOT OLD.cost OR NEW.fee IS NOT OLD.fee))
+BEGIN SELECT RAISE(ABORT,'Paper proposal and terminal facts are immutable'); END;
+CREATE TRIGGER paper_attempt_objective BEFORE INSERT ON paper_attempts
+WHEN EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=NEW.run_id AND state IN ('intent','dispatched','unknown'))
+ OR EXISTS(SELECT 1 FROM paper_attempts WHERE paper_market_id=NEW.paper_market_id AND state IN ('full','partial') AND side!=NEW.side)
+ OR NEW.quantity+coalesce((SELECT sum(filled_quantity) FROM paper_attempts WHERE paper_market_id=NEW.paper_market_id AND state IN ('full','partial')),0)
+    IS NOT (SELECT quantity FROM paper_runs WHERE run_id=NEW.run_id)
+ OR (SELECT count(*) FROM paper_attempts WHERE paper_market_id=NEW.paper_market_id)>=4096
+BEGIN SELECT RAISE(ABORT,'Paper attempt must retry only the unfilled locked objective'); END;
+CREATE TABLE paper_venue_orders (
+    client_order_id TEXT PRIMARY KEY CHECK(length(CAST(client_order_id AS BLOB)) BETWEEN 1 AND 128),
+    source_market_id TEXT NOT NULL CHECK(length(CAST(source_market_id AS BLOB)) BETWEEN 1 AND 128),
+    source_contract_id TEXT NOT NULL CHECK(length(CAST(source_contract_id AS BLOB)) BETWEEN 1 AND 128),
+    side TEXT NOT NULL CHECK(side IN ('yes','no')),
+    quantity INTEGER NOT NULL CHECK(quantity BETWEEN 1 AND 1000000),
+    price INTEGER NOT NULL CHECK(price BETWEEN 0 AND 100000000),
+    available_millionths INTEGER NOT NULL CHECK(available_millionths>=0),
+    filled_quantity INTEGER NOT NULL CHECK(filled_quantity BETWEEN 0 AND quantity),
+    cost INTEGER NOT NULL CHECK(cost>=0),
+    fee INTEGER NOT NULL CHECK(fee>=0),
+    accepted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+) STRICT;
+CREATE TRIGGER paper_venue_fixed BEFORE UPDATE ON paper_venue_orders BEGIN SELECT RAISE(ABORT,'Venue records are immutable'); END;
+CREATE TRIGGER paper_venue_kept BEFORE DELETE ON paper_venue_orders BEGIN SELECT RAISE(ABORT,'Venue records are immutable'); END;
+PRAGMA user_version=6;
+";
+
+/// The controlled paper exchange. It owns a connection separate from the recorder, executes each
+/// IOC with `paper::simulate` and durably records the result under its client order id before
+/// replying, so the outcome survives a lost reply or caller.
+pub(crate) struct PaperVenue {
+    connection: Connection,
+}
+impl PaperVenue {
+    pub(crate) fn open(path: &Path) -> Result<Self, String> {
+        let connection = Connection::open(path).map_err(|e| e.to_string())?;
+        connection
+            .busy_timeout(Duration::from_millis(250))
+            .and_then(|()| {
+                connection.execute_batch("PRAGMA synchronous=FULL; PRAGMA fullfsync=ON;")
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Self { connection })
+    }
+}
+fn side_text(side: crate::strategy::Side) -> &'static str {
+    if side == crate::strategy::Side::Yes {
+        "yes"
+    } else {
+        "no"
+    }
+}
+fn side_value(text: &str) -> Option<crate::strategy::Side> {
+    match text {
+        "yes" => Some(crate::strategy::Side::Yes),
+        "no" => Some(crate::strategy::Side::No),
+        _ => None,
+    }
+}
+impl crate::paper::Venue for PaperVenue {
+    fn submit(&mut self, order: &crate::paper::Order) -> Option<crate::paper::Fill> {
+        use crate::paper::Fill;
+        let fill =
+            crate::paper::simulate(order.quantity, order.price, order.available_millionths).ok()?;
+        let (filled, cost, fee) = match fill {
+            Fill::Zero { .. } => (0, 0, 0),
+            Fill::Full { quantity, charge } | Fill::Partial { quantity, charge } => {
+                (quantity, charge.cost, charge.fee)
+            }
+        };
+        self.connection.execute("INSERT INTO paper_venue_orders(client_order_id,source_market_id,source_contract_id,side,quantity,price,available_millionths,filled_quantity,cost,fee) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![order.client_order_id,order.source_market_id,order.source_contract_id,side_text(order.side),order.quantity as i64,order.price.millionths() as i64,i64::try_from(order.available_millionths).ok()?,filled as i64,cost,fee]).ok()?;
+        Some(fill)
+    }
+    fn lookup(&mut self, id: &str) -> Option<(crate::paper::Order, crate::paper::Fill)> {
+        use crate::paper::{Charge, Fill, Order};
+        let (market,contract,side,quantity,price,available,filled,cost,fee):(String,String,String,i64,i64,i64,i64,i64,i64)=self.connection.query_row("SELECT source_market_id,source_contract_id,side,quantity,price,available_millionths,filled_quantity,cost,fee FROM paper_venue_orders WHERE client_order_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).ok()?;
+        let order = Order {
+            client_order_id: id.into(),
+            source_market_id: market,
+            source_contract_id: contract,
+            side: side_value(&side)?,
+            quantity: u64::try_from(quantity).ok()?,
+            price: crate::strategy::Decimal::parse(&crate::paper::contract_cents(price)).ok()?,
+            available_millionths: u64::try_from(available).ok()?,
+        };
+        // The venue's stored result, not a recomputation from the request.
+        let charge = Charge {
+            cost,
+            fee,
+            // Saturates so an impossible charge fails validation as a conflict.
+            debit: cost.saturating_add(fee),
+        };
+        let fill = match u64::try_from(filled).ok()? {
+            // A charged zero contradicts itself: reported as such, so it durably blocks.
+            0 if cost != 0 || fee != 0 => Fill::Partial {
+                quantity: 0,
+                charge,
+            },
+            0 => Fill::Zero {
+                available_millionths: order.available_millionths,
+            },
+            q if q == order.quantity => Fill::Full {
+                quantity: q,
+                charge,
+            },
+            q => Fill::Partial {
+                quantity: q,
+                charge,
+            },
+        };
+        Some((order, fill))
+    }
+}
+
 impl Recorder {
     pub(crate) fn paper_validate_balances(&self) -> Result<(), crate::paper::Failure> {
         let invalid: bool=self.connection.query_row("SELECT EXISTS(SELECT 1 FROM paper_runs r WHERE cash != starting_balance - coalesce((SELECT sum(cost+fee) FROM paper_attempts a WHERE a.run_id=r.run_id AND a.state IN ('full','partial')),0) + coalesce((SELECT sum(payout) FROM paper_settlements s WHERE s.run_id=r.run_id),0) OR reserved != coalesce((SELECT sum(reserved) FROM paper_attempts a WHERE a.run_id=r.run_id AND a.state IN ('intent','dispatched','unknown')),0)) OR EXISTS(SELECT 1 FROM paper_settlements s JOIN (SELECT run_id,paper_market_id,min(side) AS side,max(side) AS other_side,sum(filled_quantity) AS held,sum(cost) AS cost,sum(fee) AS fee FROM paper_attempts WHERE state IN ('full','partial') GROUP BY run_id,paper_market_id) a USING(run_id,paper_market_id) WHERE a.side!=a.other_side OR s.held_quantity!=a.held OR s.net!=s.payout-a.cost-a.fee OR s.payout!=CASE WHEN s.winning_side=a.side THEN a.held*100000000 ELSE 0 END)",[],|r|r.get(0)).map_err(paper_storage)?;
@@ -520,8 +663,23 @@ impl Recorder {
         run_id: i64,
     ) -> Result<crate::paper::RunSummary, crate::paper::Failure> {
         self.connection.query_row("SELECT run_id,strategy_version_id,revision,control_state,cash,reserved,virtual_frontier_ms,last_evaluated_through_ms,completed_ordinal,pending_ordinal,error_code,quantity,minimum_price,maximum_price,starting_balance,fee_model,simulation_model,scenario_revision,go_utc_ms,(SELECT coalesce(sum(evidence_revision),0) FROM paper_markets m WHERE m.run_id=paper_runs.run_id)+(SELECT count(*) FROM paper_attempts a WHERE a.run_id=paper_runs.run_id)+(SELECT count(*) FROM paper_settlements s WHERE s.run_id=paper_runs.run_id),start_uuid,EXISTS(SELECT 1 FROM paper_attempts a LEFT JOIN paper_settlements s USING(run_id,paper_market_id) WHERE a.run_id=paper_runs.run_id AND a.state IN ('full','partial') AND s.settlement_id IS NULL) FROM paper_runs WHERE run_id=?1",[run_id],|r|Ok(crate::paper::RunSummary {
-            run_id:r.get::<_,i64>(0)?.to_string(),strategy_version_id:r.get::<_,i64>(1)?.to_string(),revision:r.get::<_,i64>(2)?.to_string(),control_state:r.get(3)?,cash:r.get::<_,i64>(4)?.to_string(),reserved:r.get::<_,i64>(5)?.to_string(),virtual_frontier_ms:r.get::<_,i64>(6)?.to_string(),last_evaluated_through_ms:r.get::<_,i64>(7)?.to_string(),completed_ordinal:r.get::<_,i64>(8)?.to_string(),pending_ordinal:r.get::<_,Option<i64>>(9)?.map(|n|n.to_string()),error_code:r.get(10)?,quantity:r.get::<_,i64>(11)?.to_string(),minimum_price:crate::paper::contract_cents(r.get::<_,i64>(12)?),maximum_price:crate::paper::contract_cents(r.get::<_,i64>(13)?),starting_balance:r.get::<_,i64>(14)?.to_string(),fee_model:r.get(15)?,simulation_model:r.get(16)?,scenario_revision:r.get(17)?,go_utc_ms:r.get::<_,i64>(18)?.to_string(),history_revision:r.get::<_,i64>(19)?.to_string(),start_uuid:r.get(20)?,pending_holdings:r.get(21)?
-        })).map_err(paper_storage)
+            run_id:r.get::<_,i64>(0)?.to_string(),strategy_version_id:r.get::<_,i64>(1)?.to_string(),revision:r.get::<_,i64>(2)?.to_string(),control_state:r.get(3)?,cash:r.get::<_,i64>(4)?.to_string(),reserved:r.get::<_,i64>(5)?.to_string(),virtual_frontier_ms:r.get::<_,i64>(6)?.to_string(),last_evaluated_through_ms:r.get::<_,i64>(7)?.to_string(),completed_ordinal:r.get::<_,i64>(8)?.to_string(),pending_ordinal:r.get::<_,Option<i64>>(9)?.map(|n|n.to_string()),error_code:r.get(10)?,quantity:r.get::<_,i64>(11)?.to_string(),minimum_price:crate::paper::contract_cents(r.get::<_,i64>(12)?),maximum_price:crate::paper::contract_cents(r.get::<_,i64>(13)?),starting_balance:r.get::<_,i64>(14)?.to_string(),fee_model:r.get(15)?,simulation_model:r.get(16)?,scenario_revision:r.get(17)?,go_utc_ms:r.get::<_,i64>(18)?.to_string(),history_revision:r.get::<_,i64>(19)?.to_string(),start_uuid:r.get(20)?,pending_holdings:r.get(21)?,recovery:None
+        })).map_err(paper_storage).and_then(|mut summary| {
+            summary.recovery = self.paper_recovery(run_id, None)?;
+            Ok(summary)
+        })
+    }
+
+    /// The latest interrupted or unconfirmed attempt of a run (or one market): what is being
+    /// checked, or how the check ended. Independent of any selected history item.
+    pub(crate) fn paper_recovery(
+        &self,
+        run: i64,
+        market: Option<i64>,
+    ) -> Result<Option<crate::paper::Recovery>, crate::paper::Failure> {
+        self.connection.query_row("SELECT a.paper_market_id,m.source_market_id,a.side,a.quantity,a.state,a.filled_quantity,(SELECT coalesce(sum(x.filled_quantity),0) FROM paper_attempts x WHERE x.paper_market_id=a.paper_market_id AND x.state IN ('full','partial')),a.interrupted FROM paper_attempts a JOIN paper_markets m USING(run_id,paper_market_id) WHERE a.run_id=?1 AND (?2 IS NULL OR a.paper_market_id=?2) AND (a.interrupted IS NOT NULL OR a.state IN ('intent','dispatched','unknown')) ORDER BY a.state IN ('intent','dispatched','unknown') DESC,a.attempt_id DESC LIMIT 1",params![run,market],|r|Ok(crate::paper::Recovery {
+            paper_market_id:r.get::<_,i64>(0)?.to_string(),source_market_id:r.get(1)?,side:r.get(2)?,requested_quantity:r.get::<_,i64>(3)?.to_string(),state:r.get(4)?,filled_quantity:r.get::<_,i64>(5)?.to_string(),confirmed_quantity:r.get::<_,i64>(6)?.to_string(),interrupted:r.get(7)?
+        })).optional().map_err(paper_storage)
     }
 
     pub(crate) fn paper_start(
@@ -675,7 +833,7 @@ impl Recorder {
         state: &str,
     ) -> Result<crate::paper::RunSummary, crate::paper::Failure> {
         let tx = self.connection.transaction().map_err(paper_storage)?;
-        let changed=tx.execute("UPDATE paper_runs SET completed_ordinal=pending_ordinal,completed_receipt=pending_receipt,completed_result='complete',completed_revision=revision+1,pending_ordinal=NULL,pending_receipt=NULL,virtual_frontier_ms=?4,last_evaluated_through_ms=?5,control_state=?6,revision=revision+1 WHERE run_id=?1 AND pending_ordinal=?2 AND pending_receipt=?3 AND virtual_frontier_ms<=?4 AND last_evaluated_through_ms<=?5 AND ?5<=?4",params![run,ordinal,receipt,frontier,evaluated,state]).map_err(paper_storage)?;
+        let changed=tx.execute("UPDATE paper_runs SET completed_ordinal=pending_ordinal,completed_receipt=pending_receipt,completed_result='complete',completed_revision=revision+1,pending_ordinal=NULL,pending_receipt=NULL,virtual_frontier_ms=?4,last_evaluated_through_ms=?5,control_state=CASE WHEN ?6='stopped' AND EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown')) THEN 'unresolved' ELSE ?6 END,revision=revision+1 WHERE run_id=?1 AND pending_ordinal=?2 AND pending_receipt=?3 AND virtual_frontier_ms<=?4 AND last_evaluated_through_ms<=?5 AND ?5<=?4",params![run,ordinal,receipt,frontier,evaluated,state]).map_err(paper_storage)?;
         if changed != 1 {
             return Err(crate::paper::Failure::new("unconfirmed"));
         }
@@ -693,7 +851,7 @@ impl Recorder {
         if !["waiting", "active", "paused", "stopped", "unresolved"].contains(&state) {
             return Err(crate::paper::Failure::new("invalid_request"));
         }
-        self.connection.execute("UPDATE paper_runs SET control_state=CASE WHEN control_state='unresolved' OR EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown')) THEN 'unresolved' ELSE ?2 END,stop_after_market=max(stop_after_market,?3),error_code=CASE WHEN control_state='unresolved' OR EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown')) THEN coalesce(error_code,?4) ELSE coalesce(?4,error_code) END,revision=revision+1 WHERE run_id=?1",params![run,state,stop_after,error]).map_err(paper_storage)?;
+        self.connection.execute("UPDATE paper_runs SET control_state=CASE WHEN control_state='unresolved' OR ?2='unresolved' OR (?2='stopped' AND EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown'))) THEN 'unresolved' ELSE ?2 END,stop_after_market=max(stop_after_market,?3),error_code=CASE WHEN ?4='report_conflict' THEN ?4 WHEN control_state='unresolved' OR EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown')) THEN coalesce(error_code,?4) ELSE coalesce(?4,error_code) END,revision=revision+1 WHERE run_id=?1",params![run,state,stop_after,error]).map_err(paper_storage)?;
         self.paper_summary(run)
     }
 
@@ -701,7 +859,7 @@ impl Recorder {
         let active: bool = self
             .connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM paper_runs WHERE control_state!='stopped')",
+                "SELECT EXISTS(SELECT 1 FROM paper_runs WHERE control_state!='stopped' OR pending_ordinal IS NOT NULL)",
                 [],
                 |r| r.get(0),
             )
@@ -709,7 +867,9 @@ impl Recorder {
         if !active {
             return Ok(());
         }
-        self.connection.execute("UPDATE paper_runs SET control_state=CASE WHEN EXISTS(SELECT 1 FROM paper_attempts a WHERE a.run_id=paper_runs.run_id AND a.state IN ('intent','dispatched','unknown')) THEN 'unresolved' ELSE 'stopped' END,revision=revision+1 WHERE control_state!='stopped'",[]).map_err(paper_storage)?;
+        // A pending input is closed as interrupted, never replayed: its committed effects stand
+        // and any purchase it left unconfirmed is reconciled from venue evidence.
+        self.connection.execute("UPDATE paper_runs SET control_state=CASE WHEN EXISTS(SELECT 1 FROM paper_attempts a WHERE a.run_id=paper_runs.run_id AND a.state IN ('intent','dispatched','unknown')) THEN 'unresolved' ELSE 'stopped' END,completed_ordinal=coalesce(pending_ordinal,completed_ordinal),completed_receipt=coalesce(pending_receipt,completed_receipt),completed_result=CASE WHEN pending_ordinal IS NULL THEN completed_result ELSE 'interrupted' END,completed_revision=CASE WHEN pending_ordinal IS NULL THEN completed_revision ELSE revision+1 END,pending_ordinal=NULL,pending_receipt=NULL,revision=revision+1 WHERE control_state!='stopped' OR pending_ordinal IS NOT NULL",[]).map_err(paper_storage)?;
         Ok(())
     }
 }
@@ -740,7 +900,7 @@ impl Recorder {
         // fund another attempt. SourceState never lowers a binding's number, even across
         // reconnects, so re-initialization is not new data. Canonical u64 strings compare by
         // length, then text, keeping the full range.
-        let (confirmed,locked,unresolved,spent,attempts):(i64,Option<String>,bool,bool,i64)=tx.query_row("SELECT coalesce(sum(filled_quantity) FILTER (WHERE state IN ('full','partial')),0),max(side) FILTER (WHERE state IN ('full','partial')),coalesce(max(state IN ('intent','dispatched','unknown')),0),coalesce(max(dispatched_virtual_ms IS NOT NULL AND json_extract(evidence_identity,'$.binding_id')=?2 AND (length(json_extract(evidence_identity,'$.observation_number'))>length(?3) OR (length(json_extract(evidence_identity,'$.observation_number'))=length(?3) AND json_extract(evidence_identity,'$.observation_number')>=?3))),0),count(*) FROM paper_attempts WHERE paper_market_id=?1",params![market,book.binding_id,book.observation_number.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(paper_storage)?;
+        let (confirmed,locked,unresolved,spent,attempts):(i64,Option<String>,bool,bool,i64)=tx.query_row("SELECT coalesce(sum(filled_quantity) FILTER (WHERE state IN ('full','partial')),0),max(side) FILTER (WHERE state IN ('full','partial')),EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?4 AND state IN ('intent','dispatched','unknown')),coalesce(max(dispatched_virtual_ms IS NOT NULL AND json_extract(evidence_identity,'$.binding_id')=?2 AND (length(json_extract(evidence_identity,'$.observation_number'))>length(?3) OR (length(json_extract(evidence_identity,'$.observation_number'))=length(?3) AND json_extract(evidence_identity,'$.observation_number')>=?3))),0),count(*) FROM paper_attempts WHERE paper_market_id=?1",params![market,book.binding_id,book.observation_number.to_string(),run],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(paper_storage)?;
         if unresolved {
             return Err(Failure::new("unresolved"));
         }
@@ -773,11 +933,88 @@ impl Recorder {
         Ok(Some(attempt))
     }
 
-    pub(crate) fn paper_finish_attempt(
+    /// The pre-send marker: commits before the order may leave, so an intent without it was
+    /// provably never sent. Returns the exact durable request to send.
+    pub(crate) fn paper_dispatch(
         &mut self,
         run: i64,
         attempt: i64,
         at: i64,
+    ) -> Result<crate::paper::Order, crate::paper::Failure> {
+        let tx = self.connection.transaction().map_err(paper_storage)?;
+        let changed=tx.execute("UPDATE paper_attempts SET state='dispatched',dispatched_virtual_ms=?3 WHERE run_id=?1 AND attempt_id=?2 AND state='intent'",params![run,attempt,at]).map_err(paper_storage)?;
+        if changed != 1 {
+            return Err(crate::paper::Failure::new("unconfirmed"));
+        }
+        tx.execute(
+            "UPDATE paper_runs SET revision=revision+1 WHERE run_id=?1",
+            [run],
+        )
+        .map_err(paper_storage)?;
+        tx.commit().map_err(paper_storage)?;
+        self.paper_order(attempt)
+    }
+
+    /// One attempt's request, rebuilt from its immutable durable fields; the client order id is
+    /// its scoped identity (run, market, proposal ordinal).
+    pub(crate) fn paper_order(
+        &self,
+        attempt: i64,
+    ) -> Result<crate::paper::Order, crate::paper::Failure> {
+        let (run,market,proposal,source,contract,side,quantity,price,available):(i64,i64,i64,String,String,String,i64,i64,i64)=self.connection.query_row("SELECT a.run_id,a.paper_market_id,a.proposal_ordinal,m.source_market_id,m.source_contract_id,a.side,a.quantity,a.price,a.available_millionths FROM paper_attempts a JOIN paper_markets m USING(run_id,paper_market_id) WHERE a.attempt_id=?1",[attempt],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?))).map_err(paper_storage)?;
+        let invalid = || crate::paper::Failure::new("storage");
+        Ok(crate::paper::Order {
+            client_order_id: format!("metten-paper-{run}-{market}-{proposal}"),
+            source_market_id: source,
+            source_contract_id: contract,
+            side: side_value(&side).ok_or_else(invalid)?,
+            quantity: u64::try_from(quantity).map_err(|_| invalid())?,
+            price: crate::strategy::Decimal::parse(&crate::paper::contract_cents(price))
+                .map_err(|_| invalid())?,
+            available_millionths: u64::try_from(available).map_err(|_| invalid())?,
+        })
+    }
+
+    /// Unconfirmed attempts (run, attempt, state), oldest first.
+    pub(crate) fn paper_unconfirmed(
+        &self,
+        run: Option<i64>,
+    ) -> Result<Vec<(i64, i64, String)>, crate::paper::Failure> {
+        let mut statement = self.connection.prepare("SELECT run_id,attempt_id,state FROM paper_attempts WHERE state IN ('intent','dispatched','unknown') AND (?1 IS NULL OR run_id=?1) ORDER BY attempt_id").map_err(paper_storage)?;
+        statement
+            .query_map([run], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(paper_storage)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(paper_storage)
+    }
+
+    /// Records once why an attempt's outcome is being checked; its market reports the check.
+    pub(crate) fn paper_interrupt(
+        &mut self,
+        run: i64,
+        attempt: i64,
+        cause: &str,
+    ) -> Result<(), crate::paper::Failure> {
+        let tx = self.connection.transaction().map_err(paper_storage)?;
+        let changed=tx.execute("UPDATE paper_attempts SET interrupted=?3 WHERE run_id=?1 AND attempt_id=?2 AND interrupted IS NULL AND state IN ('intent','dispatched','unknown')",params![run,attempt,cause]).map_err(paper_storage)?;
+        if changed == 1 {
+            tx.execute("UPDATE paper_markets SET reason='checking_purchase',evidence_revision=evidence_revision+1 WHERE paper_market_id=(SELECT paper_market_id FROM paper_attempts WHERE attempt_id=?1)",[attempt]).map_err(paper_storage)?;
+            tx.execute(
+                "UPDATE paper_runs SET revision=revision+1 WHERE run_id=?1",
+                [run],
+            )
+            .map_err(paper_storage)?;
+        }
+        tx.commit().map_err(paper_storage)
+    }
+
+    /// Commits a terminal outcome with its debit, reservation release and recovery history in
+    /// one transaction. `None` cancels an unsent intent; a fill needs a dispatched order. An
+    /// identical repeated outcome is a no-op; a different one is refused.
+    pub(crate) fn paper_finish_attempt(
+        &mut self,
+        run: i64,
+        attempt: i64,
         outcome: Option<crate::paper::Fill>,
     ) -> Result<(), crate::paper::Failure> {
         use crate::paper::{Failure, Fill};
@@ -806,7 +1043,8 @@ impl Recorder {
             ) => {
                 let ask = crate::strategy::Decimal::parse(&crate::paper::contract_cents(price))
                     .map_err(|_| Failure::new("storage"))?;
-                if q as i64 != fillable
+                if q == 0
+                    || q as i64 != fillable
                     || matches!(outcome, Some(Fill::Full { .. })) != (fillable == quantity)
                     || c != crate::paper::charge(q, ask)?
                     || c.debit > reservation
@@ -826,7 +1064,7 @@ impl Recorder {
                 )
             }
         };
-        if state != "intent" {
+        if !["intent", "dispatched", "unknown"].contains(&state.as_str()) {
             let same:bool=tx.query_row("SELECT state=?3 AND filled_quantity=?4 AND cost=?5 AND fee=?6 FROM paper_attempts WHERE run_id=?1 AND attempt_id=?2",params![run,attempt,next,filled,cost,fee],|r|r.get(0)).map_err(paper_storage)?;
             return if same {
                 Ok(())
@@ -834,9 +1072,26 @@ impl Recorder {
                 Err(Failure::new("input_conflict"))
             };
         }
-        tx.execute("UPDATE paper_attempts SET state=?3,filled_quantity=?4,cost=?5,fee=?6,dispatched_virtual_ms=?7,outcome_id=?8 WHERE run_id=?1 AND attempt_id=?2",params![run,attempt,next,filled,cost,fee,if outcome.is_some(){Some(at)}else{None},if outcome.is_some(){Some(format!("paper-attempt-{attempt}"))}else{None}]).map_err(paper_storage)?;
-        tx.execute("UPDATE paper_runs SET cash=cash-?2,reserved=reserved-?3,revision=revision+1 WHERE run_id=?1",params![run,debit,reservation]).map_err(paper_storage)?;
-        tx.execute("UPDATE paper_markets SET reason=CASE (SELECT coalesce(sum(a.filled_quantity),0) FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state IN ('full','partial')) WHEN 0 THEN CASE WHEN EXISTS(SELECT 1 FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state='zero') THEN 'insufficient_quantity' ELSE 'canceled_before_dispatch' END WHEN (SELECT quantity FROM paper_runs WHERE run_id=?1) THEN 'confirmed_full_fill_pending_settlement' ELSE 'confirmed_partial_fill_pending_settlement' END WHERE run_id=?1 AND paper_market_id=(SELECT paper_market_id FROM paper_attempts WHERE attempt_id=?2)",params![run,attempt]).map_err(paper_storage)?;
+        // Only an unsent intent may be canceled; only a possibly sent order may fill.
+        if (state == "intent") != outcome.is_none() {
+            return Err(Failure::new("input_conflict"));
+        }
+        // After contradictory reports no later report may settle the order.
+        let conflicted: bool = tx
+            .query_row(
+                "SELECT coalesce(error_code='report_conflict',0) FROM paper_runs WHERE run_id=?1",
+                [run],
+                |r| r.get(0),
+            )
+            .map_err(paper_storage)?;
+        if conflicted && outcome.is_some() {
+            return Err(Failure::new("input_conflict"));
+        }
+        tx.execute("UPDATE paper_attempts SET state=?3,filled_quantity=?4,cost=?5,fee=?6,dispatched_virtual_ms=CASE WHEN ?7 THEN coalesce(dispatched_virtual_ms,intent_virtual_ms) END,outcome_id=?8 WHERE run_id=?1 AND attempt_id=?2",params![run,attempt,next,filled,cost,fee,outcome.is_some(),if outcome.is_some(){Some(format!("paper-attempt-{attempt}"))}else{None}]).map_err(paper_storage)?;
+        // A stopped run whose last uncertain purchase is now confirmed is simply stopped, and the
+        // failure that left it unresolved is no longer current.
+        tx.execute("UPDATE paper_runs SET cash=cash-?2,reserved=reserved-?3,control_state=CASE WHEN control_state='unresolved' AND NOT EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown')) THEN 'stopped' ELSE control_state END,error_code=CASE WHEN control_state='unresolved' AND NOT EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown')) THEN NULL ELSE error_code END,revision=revision+1 WHERE run_id=?1",params![run,debit,reservation]).map_err(paper_storage)?;
+        tx.execute("UPDATE paper_markets SET evidence_revision=evidence_revision+1,reason=CASE (SELECT coalesce(sum(a.filled_quantity),0) FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state IN ('full','partial')) WHEN 0 THEN CASE WHEN EXISTS(SELECT 1 FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state='zero') THEN 'insufficient_quantity' ELSE 'canceled_before_dispatch' END WHEN (SELECT quantity FROM paper_runs WHERE run_id=?1) THEN 'confirmed_full_fill_pending_settlement' ELSE 'confirmed_partial_fill_pending_settlement' END WHERE run_id=?1 AND paper_market_id=(SELECT paper_market_id FROM paper_attempts WHERE attempt_id=?2)",params![run,attempt]).map_err(paper_storage)?;
         tx.commit().map_err(paper_storage)?;
         Ok(())
     }
@@ -931,7 +1186,7 @@ impl Recorder {
         reason: &str,
         qualified: bool,
     ) -> Result<(), crate::paper::Failure> {
-        self.connection.execute("UPDATE paper_markets SET summary=CASE WHEN ?4 AND ?3 IN ('insufficient_funds','price','evidence_mismatch','objective_blocked','unavailable_evidence','purchases_paused') AND json_extract(summary,'$.first_block') IS NULL THEN json_set(summary,'$.first_block',json_object('reason',?3,'primary_witness',json_extract(summary,'$.primary_witness'),'purchase_check',json_extract(summary,'$.purchase_check'))) ELSE summary END,evidence_revision=evidence_revision+CASE WHEN participated=0 OR qualified<?4 THEN 1 ELSE 0 END,participated=1,qualified=max(qualified,?4),reason=CASE WHEN EXISTS(SELECT 1 FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state IN ('full','partial','zero','unknown')) THEN reason ELSE ?3 END WHERE run_id=?1 AND source_market_id=?2",params![run,source,reason,qualified]).map_err(paper_storage)?;
+        self.connection.execute("UPDATE paper_markets SET summary=CASE WHEN ?4 AND ?3 IN ('insufficient_funds','price','evidence_mismatch','objective_blocked','unavailable_evidence','purchases_paused') AND json_extract(summary,'$.first_block') IS NULL THEN json_set(summary,'$.first_block',json_object('reason',?3,'primary_witness',json_extract(summary,'$.primary_witness'),'purchase_check',json_extract(summary,'$.purchase_check'))) ELSE summary END,evidence_revision=evidence_revision+CASE WHEN participated=0 OR qualified<?4 THEN 1 ELSE 0 END,participated=1,qualified=max(qualified,?4),reason=CASE WHEN EXISTS(SELECT 1 FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state IN ('full','partial','zero','dispatched','unknown')) THEN reason ELSE ?3 END WHERE run_id=?1 AND source_market_id=?2",params![run,source,reason,qualified]).map_err(paper_storage)?;
         Ok(())
     }
 
@@ -977,6 +1232,11 @@ impl Recorder {
                 Err(Failure::new("input_conflict"))
             };
         }
+        // The final holding is unknown while a purchase is checked; settle it once it is known.
+        let checking:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM paper_attempts a JOIN paper_markets m USING(run_id,paper_market_id) WHERE m.run_id=?1 AND m.source_market_id=?2 AND a.state IN ('intent','dispatched','unknown'))",params![run,entry.source_market_id],|r|r.get(0)).map_err(paper_storage)?;
+        if checking {
+            return Ok(());
+        }
         let holding:Option<(i64,String,String,i64,i64,i64,i64)>=tx.query_row("SELECT m.paper_market_id,min(a.side),max(a.side),sum(a.filled_quantity),sum(a.cost),sum(a.fee),m.close_day FROM paper_markets m JOIN paper_attempts a USING(run_id,paper_market_id) JOIN paper_runs r USING(run_id) WHERE m.run_id=?1 AND m.source_market_id=?2 AND m.source_contract_id=?3 AND m.close_utc_ms-r.go_utc_ms=?4 AND a.state IN ('full','partial') GROUP BY m.paper_market_id",params![run,entry.source_market_id,entry.source_contract_id,i64::try_from(entry.close_ms).map_err(|_|Failure::new("range"))?],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(paper_storage)?;
         let Some((market, side, other_side, quantity, cost, fee, day)) = holding else {
             return Ok(());
@@ -1004,13 +1264,13 @@ impl Recorder {
     }
 
     /// Deduplicated confirmed fills for one market's objective: (quantity, locked side,
-    /// any attempt finished, an attempt unresolved).
+    /// any attempt finished, an attempt anywhere in the run unresolved).
     pub(crate) fn paper_objective(
         &self,
         run: i64,
         source: &str,
     ) -> Result<(u64, Option<crate::strategy::Side>, bool, bool), crate::paper::Failure> {
-        let (confirmed,low,high,attempted,unresolved):(i64,Option<String>,Option<String>,bool,bool)=self.connection.query_row("SELECT coalesce(sum(a.filled_quantity) FILTER (WHERE a.state IN ('full','partial')),0),min(a.side) FILTER (WHERE a.state IN ('full','partial')),max(a.side) FILTER (WHERE a.state IN ('full','partial')),count(a.attempt_id)>0,coalesce(max(a.state IN ('intent','dispatched','unknown')),0) FROM paper_markets m LEFT JOIN paper_attempts a USING(run_id,paper_market_id) WHERE m.run_id=?1 AND m.source_market_id=?2",params![run,source],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(paper_storage)?;
+        let (confirmed,low,high,attempted,unresolved):(i64,Option<String>,Option<String>,bool,bool)=self.connection.query_row("SELECT coalesce(sum(a.filled_quantity) FILTER (WHERE a.state IN ('full','partial')),0),min(a.side) FILTER (WHERE a.state IN ('full','partial')),max(a.side) FILTER (WHERE a.state IN ('full','partial')),count(a.attempt_id)>0,EXISTS(SELECT 1 FROM paper_attempts x WHERE x.run_id=?1 AND x.state IN ('intent','dispatched','unknown')) FROM paper_markets m LEFT JOIN paper_attempts a USING(run_id,paper_market_id) WHERE m.run_id=?1 AND m.source_market_id=?2",params![run,source],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(paper_storage)?;
         if low != high {
             return Err(paper_storage(rusqlite::Error::InvalidQuery));
         }
@@ -1169,11 +1429,26 @@ impl Recorder {
                         })
                         .transpose()?,
                     attempt_count: r.get::<_, i64>(28)?.to_string(),
+                    recovery: None,
                 })
             })
             .map_err(paper_storage)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(paper_storage)?;
+        for market in &mut markets {
+            market.recovery = self.paper_recovery(
+                market
+                    .run_id
+                    .parse()
+                    .map_err(|_| crate::paper::Failure::new("storage"))?,
+                Some(
+                    market
+                        .paper_market_id
+                        .parse()
+                        .map_err(|_| crate::paper::Failure::new("storage"))?,
+                ),
+            )?;
+        }
         let next_cursor = if markets.len() > 50 {
             markets.pop();
             markets.last().map(|m| m.paper_market_id.clone())
@@ -1344,6 +1619,23 @@ mod paper_transaction_tests {
             .paper_intent(1, &candidate, &book, 61000)
             .unwrap()
             .unwrap();
+        // An unsent intent can be canceled but never filled.
+        assert_eq!(
+            recorder
+                .paper_finish_attempt(1, attempt, Some(simulate(10, book.ask, 10000000).unwrap()))
+                .unwrap_err()
+                .code,
+            "input_conflict"
+        );
+        recorder.paper_dispatch(1, attempt, 61000).unwrap();
+        // A possibly sent order can never be canceled.
+        assert_eq!(
+            recorder
+                .paper_finish_attempt(1, attempt, None)
+                .unwrap_err()
+                .code,
+            "input_conflict"
+        );
         let fill = simulate(10, book.ask, book.available_millionths).unwrap();
         // A confirmed fill must carry the pinned fee exactly, not merely fit the reservation.
         let Fill::Full { charge: exact, .. } = fill else {
@@ -1359,18 +1651,18 @@ mod paper_transaction_tests {
         };
         assert_eq!(
             recorder
-                .paper_finish_attempt(1, attempt, 61000, Some(feeless))
+                .paper_finish_attempt(1, attempt, Some(feeless))
                 .unwrap_err()
                 .code,
             "input_conflict"
         );
         recorder
-            .paper_finish_attempt(1, attempt, 61000, Some(fill))
+            .paper_finish_attempt(1, attempt, Some(fill))
             .unwrap();
         let confirmed = recorder.paper_summary(1).unwrap();
         assert_eq!(confirmed.cash, "9736870000");
         recorder
-            .paper_finish_attempt(1, attempt, 62000, Some(fill))
+            .paper_finish_attempt(1, attempt, Some(fill))
             .unwrap();
         assert_eq!(recorder.paper_summary(1).unwrap(), confirmed);
         assert_eq!(
@@ -1378,7 +1670,6 @@ mod paper_transaction_tests {
                 .paper_finish_attempt(
                     1,
                     attempt,
-                    62000,
                     Some(Fill::Zero {
                         available_millionths: 0
                     })
@@ -1435,18 +1726,15 @@ mod paper_transaction_tests {
             .paper_intent(1, &candidate, &book, 903000)
             .unwrap()
             .unwrap();
-        recorder
-            .paper_finish_attempt(1, attempt, 903000, zero)
-            .unwrap();
+        recorder.paper_dispatch(1, attempt, 903000).unwrap();
+        recorder.paper_finish_attempt(1, attempt, zero).unwrap();
         candidate.ask.observation_number = 2;
         book.observation_number = 2;
         let attempt = recorder
             .paper_intent(1, &candidate, &book, 904000)
             .unwrap()
             .unwrap();
-        recorder
-            .paper_finish_attempt(1, attempt, 904000, None)
-            .unwrap();
+        recorder.paper_finish_attempt(1, attempt, None).unwrap();
         let reason: String = recorder
             .connection
             .query_row(

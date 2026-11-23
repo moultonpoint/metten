@@ -599,16 +599,16 @@ fn public_engine_coherence_mismatch_never_commits_an_intent() {
 }
 
 #[test]
-fn public_engine_failed_outcome_commit_keeps_intent_unresolved_on_reopen() {
+fn public_engine_failed_outcome_commit_is_reconciled_from_the_venue_on_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("paper.sqlite");
     let run;
+    let db = rusqlite::Connection::open(&path).unwrap();
     {
         let engine = Engine::open(&path).unwrap();
         let mut driver = Driver::start(&engine);
         driver.prepare();
         run = driver.context.run_id;
-        let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch("CREATE TRIGGER fail_paper_outcome BEFORE UPDATE OF state ON paper_attempts WHEN NEW.state='full' BEGIN SELECT RAISE(ABORT,'controlled failure'); END").unwrap();
         let input = Input {
             context: driver.context,
@@ -624,41 +624,68 @@ fn public_engine_failed_outcome_commit_keeps_intent_unresolved_on_reopen() {
             engine.paper_input(input).unwrap_err().code,
             "stopped_context"
         );
+        // The venue accepted and filled the order; the engine has not recorded the outcome.
         assert_eq!(
             db.query_row("SELECT state FROM paper_attempts", [], |r| r
                 .get::<_, String>(0))
                 .unwrap(),
-            "intent"
+            "dispatched"
         );
-        assert_eq!(engine.paper_summary(run).unwrap().cash, "10000000000");
+        assert_eq!(
+            db.query_row("SELECT filled_quantity FROM paper_venue_orders", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap(),
+            10
+        );
+        let preserved = engine.paper_summary(run).unwrap();
+        assert_eq!(preserved.cash, "10000000000");
+        assert_eq!(preserved.reserved, "263130000");
+        assert_eq!(preserved.control_state, "unresolved");
+        assert_eq!(preserved.error_code.as_deref(), Some("storage"));
         let mut conflicting = scenario(driver.summary.strategy_version_id.parse().unwrap());
         conflicting.settings.quantity = 11;
         assert_eq!(
             engine.paper_start(conflicting).unwrap_err().code,
             "input_conflict"
         );
-        let preserved = engine.paper_summary(run).unwrap();
-        assert_eq!(preserved.control_state, "unresolved");
-        assert_eq!(preserved.error_code.as_deref(), Some("storage"));
         assert_eq!(
             engine.paper_control(run, Control::Resume).unwrap_err().code,
             "stale_run"
         );
         assert!(engine.paper_effective().0);
-        db.execute_batch("DROP TRIGGER fail_paper_outcome").unwrap();
+        // While the outcome still cannot be recorded, the check fails closed and keeps the hold.
+        assert_eq!(
+            engine.paper_check_settlement(run).unwrap_err().code,
+            "storage"
+        );
+        assert_eq!(engine.paper_summary(run).unwrap().reserved, "263130000");
     }
+    db.execute_batch("DROP TRIGGER fail_paper_outcome").unwrap();
     let engine = Engine::open(&path).unwrap();
+    let recovered = engine.paper_summary(run).unwrap();
+    assert_eq!(recovered.control_state, "stopped");
+    assert_eq!(recovered.error_code, None);
+    assert_eq!(recovered.cash, "9736870000");
+    assert_eq!(recovered.reserved, "0");
+    let recovery = recovered.recovery.unwrap();
+    assert_eq!(recovery.state, "full");
+    assert_eq!(recovery.interrupted.as_deref(), Some("no_outcome"));
+    // Recovery never resumes purchases; the holding settles once from the saved manifest.
+    let another = || {
+        let mut another = scenario(1);
+        another.start_uuid = "00000000-0000-4000-8000-000000000002".into();
+        another
+    };
     assert_eq!(
-        engine.paper_summary(run).unwrap().control_state,
-        "unresolved"
+        engine.paper_start(another()).unwrap_err().code,
+        "run_active"
     );
     assert_eq!(
-        engine.paper_check_settlement(run).unwrap_err().code,
-        "unresolved"
+        engine.paper_check_settlement(run).unwrap().summary.cash,
+        "10736870000"
     );
-    let mut another = scenario(1);
-    another.start_uuid = "00000000-0000-4000-8000-000000000002".into();
-    assert_eq!(engine.paper_start(another).unwrap_err().code, "run_active");
+    assert!(engine.paper_start(another()).is_ok());
 }
 
 #[test]

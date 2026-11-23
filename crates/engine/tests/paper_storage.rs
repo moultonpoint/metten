@@ -39,7 +39,7 @@ fn schema_three_migration_preserves_original_rows_and_is_transactional() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
     assert_eq!(
         db.query_row("SELECT json FROM strategy_versions WHERE id=1", [], |r| {
@@ -148,7 +148,7 @@ fn failed_schema_four_migration_rolls_back_and_newer_workspace_refuses() {
         1
     );
     assert_eq!(db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('paper_runs','paper_markets','paper_attempts','paper_settlements')", [], |r|r.get::<_,i64>(0)).unwrap(),0);
-    db.execute_batch("PRAGMA user_version=6").unwrap();
+    db.execute_batch("PRAGMA user_version=7").unwrap();
     drop(db);
     assert!(Engine::open(&path).err().unwrap().contains("newer Metten"));
 }
@@ -204,6 +204,7 @@ fn schema_four_workspace(path: &std::path::Path) -> Vec<(i64, String, i64, i64, 
         "PRAGMA foreign_keys=ON; BEGIN;
         INSERT INTO paper_runs(run_id,start_uuid,strategy_version_id,format_revision,meaning_id,quantity,minimum_price,maximum_price,starting_balance,fee_model,simulation_model,scenario_revision,settlement_manifest,go_utc_ms,control_state,cash) VALUES(1,'00000000-0000-4000-8000-000000000001',STRATEGY_ID,2,'metten_rules_2',10,0,100000000,10000000000,'fee','controlled_best_ask_full_or_zero_v1','v1','[]',1000000,'stopped',10000000000),(2,'00000000-0000-4000-8000-000000000002',STRATEGY_ID,2,'metten_rules_2',101,0,100000000,10000000000,'fee','controlled_best_ask_full_or_zero_v1','v1','[]',1000000,'stopped',10000000000);
         INSERT INTO paper_markets(run_id,source_market_id,source_contract_id,series_id,open_utc_ms,close_utc_ms,close_day,participated,reason,summary) VALUES(1,'m1','c1','btc15m',0,900000,0,1,'confirmed_full_fill_pending_settlement','{}'),(2,'m2','c2','btc15m',0,900000,0,1,'insufficient_quantity','{}');
+        DROP TABLE paper_venue_orders;
         ALTER TABLE paper_attempts RENAME TO current_attempts; DROP TRIGGER paper_attempt_fixed; DROP TRIGGER paper_attempt_objective;"
             .replace("STRATEGY_ID", &strategy_id)
             .as_str(),
@@ -245,7 +246,7 @@ fn schema_four_attempts_migrate_unchanged_and_reconcile() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
     assert_eq!(db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('paper_attempts_v4','paper_one_dispatch')", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     // The migrated table enforces the finite objective: nothing beyond the filled 10.
@@ -287,4 +288,129 @@ fn attempts_per_market_are_bounded_like_evidence() {
     // Each zero fill is terminal, so 4096 retries are individually valid.
     db.execute(attempt, [ordinals(1..=4096)]).unwrap();
     assert!(db.execute(attempt, [ordinals(4097..=4097)]).is_err());
+}
+
+// The published schema-5 attempt triggers, before dispatch markers.
+const SCHEMA_FIVE_TRIGGERS: &str = "
+CREATE TRIGGER paper_attempt_fixed BEFORE UPDATE ON paper_attempts
+WHEN NEW.run_id IS NOT OLD.run_id OR NEW.paper_market_id IS NOT OLD.paper_market_id
+ OR NEW.proposal_ordinal IS NOT OLD.proposal_ordinal OR NEW.side IS NOT OLD.side
+ OR NEW.quantity IS NOT OLD.quantity OR NEW.price IS NOT OLD.price
+ OR NEW.available_millionths IS NOT OLD.available_millionths OR NEW.evidence_identity IS NOT OLD.evidence_identity
+ OR NEW.intent_virtual_ms IS NOT OLD.intent_virtual_ms OR NEW.reserved IS NOT OLD.reserved
+ OR (OLD.state!='intent' AND (NEW.state IS NOT OLD.state OR NEW.outcome_id IS NOT OLD.outcome_id
+ OR NEW.dispatched_virtual_ms IS NOT OLD.dispatched_virtual_ms OR NEW.filled_quantity IS NOT OLD.filled_quantity
+ OR NEW.cost IS NOT OLD.cost OR NEW.fee IS NOT OLD.fee))
+BEGIN SELECT RAISE(ABORT,'Paper proposal and terminal facts are immutable'); END;
+CREATE TRIGGER paper_attempt_objective BEFORE INSERT ON paper_attempts
+WHEN EXISTS(SELECT 1 FROM paper_attempts WHERE paper_market_id=NEW.paper_market_id AND state IN ('intent','dispatched','unknown'))
+ OR EXISTS(SELECT 1 FROM paper_attempts WHERE paper_market_id=NEW.paper_market_id AND state IN ('full','partial') AND side!=NEW.side)
+ OR NEW.quantity+coalesce((SELECT sum(filled_quantity) FROM paper_attempts WHERE paper_market_id=NEW.paper_market_id AND state IN ('full','partial')),0)
+    IS NOT (SELECT quantity FROM paper_runs WHERE run_id=NEW.run_id)
+ OR (SELECT count(*) FROM paper_attempts WHERE paper_market_id=NEW.paper_market_id)>=4096
+BEGIN SELECT RAISE(ABORT,'Paper attempt must retry only the unfilled locked objective'); END;
+";
+
+/// A schema-5 workspace holding a confirmed 4-of-10 partial fill and the retry's intent for the
+/// other 6, recorded before dispatch markers existed: it may or may not have been sent.
+fn schema_five_workspace(path: &std::path::Path) -> Vec<(i64, String, i64, i64, i64)> {
+    let strategy_id = version(&Engine::open(path).unwrap());
+    let db = Connection::open(path).unwrap();
+    db.execute_batch(
+        &format!("PRAGMA foreign_keys=ON; BEGIN;
+        DROP TABLE paper_venue_orders; DROP TRIGGER paper_attempt_fixed; DROP TRIGGER paper_attempt_objective;
+        ALTER TABLE paper_attempts DROP COLUMN interrupted;
+        {SCHEMA_FIVE_TRIGGERS}
+        INSERT INTO paper_runs(run_id,start_uuid,strategy_version_id,format_revision,meaning_id,quantity,minimum_price,maximum_price,starting_balance,fee_model,simulation_model,scenario_revision,settlement_manifest,go_utc_ms,control_state,cash,reserved) VALUES(1,'00000000-0000-4000-8000-000000000001',{strategy_id},2,'metten_rules_2',10,0,100000000,10000000000,'fee','controlled_best_ask_finite_ioc_v2','v1','[]',1000000,'unresolved',9894750000,157880000);
+        INSERT INTO paper_markets(run_id,source_market_id,source_contract_id,series_id,open_utc_ms,close_utc_ms,close_day,participated,reason,summary) VALUES(1,'m1','c1','btc15m',0,900000,0,1,'confirmed_partial_fill_pending_settlement','{{}}');
+        INSERT INTO paper_attempts(run_id,paper_market_id,proposal_ordinal,side,quantity,price,available_millionths,evidence_identity,intent_virtual_ms,reserved,dispatched_virtual_ms,state,outcome_id,filled_quantity,cost,fee) VALUES(1,1,1,'no',10,25000000,4000000,'{{}}',61000,263130000,61000,'partial','paper-attempt-1',4,100000000,5250000);
+        INSERT INTO paper_attempts(run_id,paper_market_id,proposal_ordinal,side,quantity,price,available_millionths,evidence_identity,intent_virtual_ms,reserved,state) VALUES(1,1,2,'no',6,25000000,3500000,'{{}}',62000,157880000,'intent');
+        PRAGMA user_version=5; COMMIT;"),
+    )
+    .unwrap();
+    attempt_rows(&db)
+}
+
+#[test]
+fn schema_five_unmarked_intent_stays_uncertain_and_keeps_the_confirmed_partial() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paper.sqlite");
+    let before = schema_five_workspace(&path);
+    for _ in 0..2 {
+        let engine = Engine::open(&path).unwrap();
+        let summary = engine.paper_summary(1).unwrap();
+        // No marker can prove the old intent unsent, and the venue has no record of it.
+        assert_eq!(summary.control_state, "unresolved");
+        assert_eq!(summary.cash, "9894750000");
+        assert_eq!(summary.reserved, "157880000");
+        let recovery = summary.recovery.unwrap();
+        assert_eq!(recovery.state, "unknown");
+        assert_eq!(recovery.interrupted.as_deref(), Some("legacy"));
+        assert_eq!(recovery.confirmed_quantity, "4");
+        assert_eq!(
+            engine.paper_check_settlement(1).unwrap_err().code,
+            "unresolved"
+        );
+        let market = engine
+            .paper_history(Some(1), None)
+            .unwrap()
+            .markets
+            .remove(0);
+        assert_eq!(market.filled_quantity.as_deref(), Some("4"));
+        assert_eq!(market.reason, "checking_purchase");
+    }
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        6
+    );
+    let mut after = before.clone();
+    after[1].1 = "unknown".into();
+    assert_eq!(attempt_rows(&db), after);
+    // Request fields and an unknown attempt's lack of outcome stay immutable.
+    assert!(
+        db.execute(
+            "UPDATE paper_attempts SET quantity=5 WHERE attempt_id=2",
+            []
+        )
+        .is_err()
+    );
+    assert!(
+        db.execute(
+            "UPDATE paper_attempts SET state='canceled' WHERE attempt_id=2",
+            []
+        )
+        .is_err()
+    );
+    assert!(
+        db.execute(
+            "UPDATE paper_attempts SET interrupted='restart' WHERE attempt_id=2",
+            []
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn failed_schema_six_migration_keeps_schema_five_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paper.sqlite");
+    let before = schema_five_workspace(&path);
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE paper_venue_orders(blocker INTEGER) STRICT")
+        .unwrap();
+    drop(db);
+    assert!(Engine::open(&path).is_err());
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        5
+    );
+    assert_eq!(attempt_rows(&db), before);
+    assert!(
+        db.prepare("SELECT interrupted FROM paper_attempts")
+            .is_err()
+    );
 }

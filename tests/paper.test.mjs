@@ -290,6 +290,26 @@ test('a history read failure leaves the recording error visible and reports itse
   assert.match(h.element('paper-error').textContent, /Recording could not be confirmed/);
 });
 
+test('repeated refreshes write each live region once per distinct message', async t => {
+  let failing = true, recording = 'storage';
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ error_code: recording }));
+    if (args.operation === 'history') { if (failing) throw { code: 'storage' }; return history([receipt()]); }
+    throw new Error('Unexpected operation');
+  } });
+  const writes = {};
+  for (const id of ['paper-error', 'paper-journal-error']) {
+    const region = h.element(id); let text = region.textContent; writes[id] = [];
+    Object.defineProperty(region, 'textContent', { get: () => text, set: value => { writes[id].push(value); text = value; } });
+  }
+  await open(h);
+  for (let i = 0; i < 3; i++) { h.timers.at(-1).callback(); await h.flush(); }
+  failing = false; recording = null;
+  for (let i = 0; i < 2; i++) { h.timers.at(-1).callback(); await h.flush(); }
+  assert.equal(writes['paper-error'].length, 2); assert.match(writes['paper-error'][0], /Recording could not be confirmed/); assert.equal(writes['paper-error'][1], '');
+  assert.equal(writes['paper-journal-error'].length, 2); assert.match(writes['paper-journal-error'][0], /history could not be read/i); assert.equal(writes['paper-journal-error'][1], '');
+});
+
 test('a failed More markets read keeps the previous page and reports itself beside the journal', async t => {
   const h = await harness(t, { paper(args) {
     if (args.operation === 'snapshot') return snapshot(run({ control_state: 'stopped', pending_holdings: true }));

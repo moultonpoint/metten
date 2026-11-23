@@ -352,6 +352,8 @@ function paperControls() {
   element<HTMLButtonElement>('paper-evidence-more').disabled = paperReadBusy || paperEvidenceCursor === null;
   element('paper-go').textContent = paperStartRequest ? 'Retry the same Go request' : 'Go';
 }
+// Rewriting identical text would make a screen reader announce it again.
+function announce(id: string, text: string) { const region = element(id); if (region.textContent !== text) region.textContent = text; }
 function renderPaper(snapshot: PaperSnapshot): boolean {
   const prior = paperSnapshot;
   if (prior?.run && !snapshot.run) return false;
@@ -366,7 +368,7 @@ function renderPaper(snapshot: PaperSnapshot): boolean {
   element('paper-fixed').textContent = run ? `Run ${run.run_id} · Version ${run.strategy_version_id} · ${run.quantity} contracts per market · ${run.minimum_price}–${run.maximum_price}¢ · starting balance ${paperMoney(run.starting_balance)} · cash ${paperMoney(run.cash)} · reserved ${paperMoney(run.reserved)}\nSynthetic clock ${run.virtual_frontier_ms} ms · ${snapshot.stop_after_market ? 'Stop after market requested · ' : ''}${run.pending_ordinal === null ? 'Displayed accounting is committed.' : 'An input remains unconfirmed; inspect details.'}` : 'Choose a saved version and fixed settings. Go waits for an eligible full boundary.';
   element('paper-recovery').textContent = run?.recovery ? paperRecovery(run.recovery) : '';
   const errorCode = snapshot.playback_error ?? run?.error_code;
-  element('paper-error').textContent = errorCode ? paperFailure({ code: errorCode }) : paperRequestError;
+  announce('paper-error', errorCode ? paperFailure({ code: errorCode }) : paperRequestError);
   paperControls();
   return true;
 }
@@ -436,7 +438,7 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
           const history = await invoke<PaperResponse>('paper', { operation: 'history' });
           if (!current()) return;
           if (history.kind !== 'history') throw new Error('Unexpected paper history');
-          paperHistory = history.page.markets; paperCursor = history.page.next_cursor; paperHistoryKey = key; element('paper-journal-error').textContent = '';
+          paperHistory = history.page.markets; paperCursor = history.page.next_cursor; paperHistoryKey = key; announce('paper-journal-error', '');
           const latestCurrent = paperHistory.find(m => m.run_id === run?.run_id);
           if (!paperSelection && latestCurrent) paperSelection = { run_id: latestCurrent.run_id, paper_market_id: latestCurrent.paper_market_id };
           renderPaperHistory();
@@ -450,7 +452,7 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
         } catch {
           // The accepted status stays usable; the unchanged key retries history on the next summary.
           if (!current()) return;
-          element('paper-journal-error').textContent = 'Paper history could not be read. Last confirmed history remains visible and is read again on the next refresh.';
+          announce('paper-journal-error', 'Paper history could not be read. Last confirmed history remains visible and is read again on the next refresh.');
         }
       }
     }
@@ -458,7 +460,7 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
       const response = await invoke<PaperResponse>('paper', { operation: 'history', before_paper_market_id: paperCursor });
       if (!current()) return;
       if (response.kind !== 'history') throw new Error('Unexpected paper history');
-      paperHistory = response.page.markets; paperCursor = response.page.next_cursor; element('paper-journal-error').textContent = ''; renderPaperHistory();
+      paperHistory = response.page.markets; paperCursor = response.page.next_cursor; announce('paper-journal-error', ''); renderPaperHistory();
     }
     if (kind === 'detail' && paperSelection) {
       const selection = { ...paperSelection }, generation = paperSelectionGeneration;
@@ -484,9 +486,9 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
     }
   } catch {
     if (!current() || (kind === 'detail' || kind === 'evidence_more') && selectedGeneration !== paperSelectionGeneration) return;
-    if (kind === 'more') { element('paper-journal-error').textContent = 'More markets could not be read. This page remains visible; choose More markets to try again.'; return; }
+    if (kind === 'more') { announce('paper-journal-error', 'More markets could not be read. This page remains visible; choose More markets to try again.'); return; }
     if (kind === 'summary') { paperUnavailable = true; element('paper-status').textContent = 'Paper status unavailable · Pause remains available'; }
-    element('paper-error').textContent = 'Paper state could not be read. Last confirmed history remains visible. Pause purchases and refresh status.';
+    announce('paper-error', 'Paper state could not be read. Last confirmed history remains visible. Pause purchases and refresh status.');
   } finally {
     paperReadBusy = false; paperControls();
     const desired = paperWanted; paperWanted = null;
@@ -501,7 +503,7 @@ async function paperAction(request: PaperRequest) {
   if (paperActionPending && request.operation !== 'pause') return;
   const generation = ++paperActionGeneration;
   const visibility = paperVisibilityGeneration;
-  paperActionPending = true; paperRequestError = ''; element('paper-error').textContent = '';
+  paperActionPending = true; paperRequestError = ''; announce('paper-error', '');
   element('paper-status').textContent = request.operation === 'start' ? 'Go requested · waiting for confirmation. A request is not a fill.' : `Requesting ${request.operation.replaceAll('_', ' ')}…`;
   paperControls();
   try {
@@ -519,7 +521,7 @@ async function paperAction(request: PaperRequest) {
     if (generation !== paperActionGeneration) return;
     ++paperResponseEpoch;
     if (request.operation === 'start' && failure && typeof failure === 'object' && 'code' in failure && ['range', 'invalid_request', 'unsupported_input', 'run_active'].includes(String(failure.code))) paperStartRequest = null;
-    if (visibility === paperVisibilityGeneration && paperPanel.open && !document.hidden) { paperRequestError = paperFailure(failure); element('paper-error').textContent = paperRequestError; }
+    if (visibility === paperVisibilityGeneration && paperPanel.open && !document.hidden) { paperRequestError = paperFailure(failure); announce('paper-error', paperRequestError); }
   } finally {
     if (generation === paperActionGeneration) { paperActionPending = false; paperHistoryKey = ''; paperControls(); requestPaperRead('summary'); }
   }

@@ -429,25 +429,31 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
       if (!current()) return;
       if (response.kind !== 'snapshot') throw new Error('Unexpected paper response');
       if (!renderPaper(response)) return;
+      paperUnavailable = false;
       const run = response.run;
       const key = run ? `${run.run_id}:${run.history_revision}:${run.control_state}:${run.cash}` : 'empty';
       if (key !== paperHistoryKey) {
-        const history = await invoke<PaperResponse>('paper', { operation: 'history' });
-        if (!current()) return;
-        if (history.kind !== 'history') throw new Error('Unexpected paper history');
-        paperHistory = history.page.markets; paperCursor = history.page.next_cursor; paperHistoryKey = key;
-        const latestCurrent = paperHistory.find(m => m.run_id === run?.run_id);
-        if (!paperSelection && latestCurrent) paperSelection = { run_id: latestCurrent.run_id, paper_market_id: latestCurrent.paper_market_id };
-        renderPaperHistory();
-        const selected = paperHistory.find(r => r.run_id === paperSelection?.run_id && r.paper_market_id === paperSelection.paper_market_id);
-        if (selected) {
-          showPaperReceipt(selected);
-          ++paperSelectionGeneration; paperEvidenceCursor = null;
-          element('paper-detail').textContent = 'Receipt updated. Open details to read the current retained evidence.';
-          if (element<HTMLDetailsElement>('paper-details').open) paperWanted = 'detail';
+        try {
+          const history = await invoke<PaperResponse>('paper', { operation: 'history' });
+          if (!current()) return;
+          if (history.kind !== 'history') throw new Error('Unexpected paper history');
+          paperHistory = history.page.markets; paperCursor = history.page.next_cursor; paperHistoryKey = key;
+          const latestCurrent = paperHistory.find(m => m.run_id === run?.run_id);
+          if (!paperSelection && latestCurrent) paperSelection = { run_id: latestCurrent.run_id, paper_market_id: latestCurrent.paper_market_id };
+          renderPaperHistory();
+          const selected = paperHistory.find(r => r.run_id === paperSelection?.run_id && r.paper_market_id === paperSelection.paper_market_id);
+          if (selected) {
+            showPaperReceipt(selected);
+            ++paperSelectionGeneration; paperEvidenceCursor = null;
+            element('paper-detail').textContent = 'Receipt updated. Open details to read the current retained evidence.';
+            if (element<HTMLDetailsElement>('paper-details').open) paperWanted = 'detail';
+          }
+        } catch {
+          // The accepted status stays usable; the unchanged key retries history on the next summary.
+          if (!current()) return;
+          element('paper-error').textContent = 'Paper history could not be read. Last confirmed history remains visible and is read again on the next refresh.';
         }
       }
-      paperUnavailable = false;
     }
     if (kind === 'more' && paperCursor !== null) {
       const response = await invoke<PaperResponse>('paper', { operation: 'history', before_paper_market_id: paperCursor });

@@ -244,3 +244,22 @@ test('a purchase still unknown after restart stays paused and offers only the ex
   const canceled = paperReceipt(receipt({ attempt_state: 'canceled', filled_quantity: '0', recovery: recovery({ state: 'canceled', requested_quantity: '10', confirmed_quantity: '0', interrupted: 'restart' }) }));
   assert.match(Object.fromEntries(canceled.facts)['Purchase check'], /was never sent and was canceled/);
 });
+
+test('a history read failure keeps the current snapshot usable and its settlement check enabled', async t => {
+  let historyReads = 0;
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ run_id: '3', control_state: 'stopped', pending_holdings: true }));
+    if (args.operation === 'history') { historyReads++; throw { code: 'storage', detail: 'private-marker' }; }
+    if (args.operation === 'check_settlement') return new Promise(() => {});
+    throw new Error('Unexpected operation');
+  } });
+  await open(h);
+  assert.equal(h.element('paper-status').textContent, 'Stopped · purchases remain stopped');
+  assert.match(h.element('paper-error').textContent, /history could not be read/i);
+  assert.doesNotMatch(h.element('paper-error').textContent, /private-marker/);
+  assert.equal(h.element('paper-settle').disabled, false);
+  h.timers.at(-1).callback(); await h.flush();
+  assert.equal(historyReads, 2, 'the same history key is retried on the next summary');
+  h.click('paper-settle'); await h.flush();
+  assert.equal(JSON.stringify(h.calls.filter(c => c.args?.operation === 'check_settlement').map(c => c.args)), JSON.stringify([{ operation: 'check_settlement', run_id: '3' }]));
+});

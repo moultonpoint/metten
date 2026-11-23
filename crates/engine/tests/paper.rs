@@ -894,25 +894,48 @@ fn reopen_refuses_a_settlement_for_a_market_with_no_fills() {
 
 #[test]
 fn public_engine_buys_an_ask_exactly_at_the_price_bounds() {
-    let directory = tempfile::tempdir().unwrap();
-    let engine = Engine::open(directory.path().join("paper.sqlite")).unwrap();
-    let mut start = scenario(saved(&engine));
-    start.settings.minimum_price = price("25");
-    start.settings.maximum_price = price("25");
-    let reply = engine.paper_start(start).unwrap();
-    let mut driver = Driver {
-        engine: &engine,
-        context: reply.context.unwrap(),
-        ordinal: 0,
-        summary: reply.summary,
-    };
-    driver.prepare();
-    driver.input(61000, Payload::Book(driver.book(10_000_000)));
-    assert_eq!(driver.summary.cash, "9736870000");
-    assert_eq!(
-        latest_receipt(&driver).attempt_state.as_deref(),
-        Some("full")
-    );
+    let debit = charge(10, price("25")).unwrap().debit;
+    // Exactly the fee-inclusive debit buys; one unit less buys nothing.
+    for (balance, cash, attempts) in [(debit, 0, 1), (debit - 1, debit - 1, 0)] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("paper.sqlite");
+        let engine = Engine::open(&path).unwrap();
+        let mut start = scenario(saved(&engine));
+        start.settings.minimum_price = price("25");
+        start.settings.maximum_price = price("25");
+        start.settings.starting_balance = balance;
+        let reply = engine.paper_start(start).unwrap();
+        let mut driver = Driver {
+            engine: &engine,
+            context: reply.context.unwrap(),
+            ordinal: 0,
+            summary: reply.summary,
+        };
+        driver.prepare();
+        driver.input(61000, Payload::Book(driver.book(10_000_000)));
+        assert_eq!(driver.summary.cash, cash.to_string());
+        assert_eq!(driver.summary.reserved, "0");
+        assert_eq!(driver.summary.pending_ordinal, None);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let count = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(
+            count("SELECT count(*) FROM paper_attempts WHERE state='full'"),
+            attempts
+        );
+        assert_eq!(count("SELECT count(*) FROM paper_attempts"), attempts);
+        assert_eq!(count("SELECT count(*) FROM paper_venue_orders"), attempts);
+        if attempts == 0 {
+            assert_eq!(
+                db.query_row(
+                    "SELECT reason FROM paper_markets WHERE participated=1",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "insufficient_funds"
+            );
+        }
+    }
 }
 
 #[test]

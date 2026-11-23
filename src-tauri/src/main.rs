@@ -845,7 +845,10 @@ fn begin_quit(app: &tauri::AppHandle) {
                 Err(providers::Failure::StillStopping)
             };
             let workspace = app.state::<Workspace>();
-            *workspace.providers.lock().expect("provider owner poisoned") = source;
+            // An operation that held the owner past the deadline restores it on drop; keep that.
+            if let Some(source) = source {
+                *workspace.providers.lock().expect("provider owner poisoned") = Some(source);
+            }
             if result.is_err() {
                 retain_quit_failure(
                     &app,

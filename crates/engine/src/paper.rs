@@ -18,8 +18,6 @@ pub fn simulation_depth(model: &str) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaperError {
     Range,
-    InsufficientFunds,
-    Price,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,29 +78,6 @@ pub fn charge(quantity: u64, ask: Decimal) -> Result<Charge, PaperError> {
         fee: i64::try_from(debit - cost).map_err(|_| PaperError::Range)?,
         debit: i64::try_from(debit).map_err(|_| PaperError::Range)?,
     })
-}
-
-pub fn funded_charge(
-    settings: &Settings,
-    ask: Decimal,
-    cash: i64,
-    reserved: i64,
-) -> Result<Charge, PaperError> {
-    settings.validate()?;
-    if ask.millionths() < settings.minimum_price.millionths()
-        || ask.millionths() > settings.maximum_price.millionths()
-    {
-        return Err(PaperError::Price);
-    }
-    let charge = charge(settings.quantity, ask)?;
-    if reserved < 0
-        || cash
-            .checked_sub(reserved)
-            .is_none_or(|free| free < charge.debit)
-    {
-        return Err(PaperError::InsufficientFunds);
-    }
-    Ok(charge)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,8 +305,6 @@ impl From<PaperError> for Failure {
     fn from(error: PaperError) -> Self {
         Self::new(match error {
             PaperError::Range => "range",
-            PaperError::InsufficientFunds => "insufficient_funds",
-            PaperError::Price => "price",
         })
     }
 }

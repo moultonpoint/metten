@@ -62,28 +62,13 @@ fn combined_rounding_preserves_fractional_cent_cost() {
 }
 
 #[test]
-fn whole_objective_is_funded_and_prices_are_inclusive() {
+fn charge_and_settings_reject_out_of_range_values() {
     let s = Settings {
         quantity: 10,
         minimum_price: price("25"),
         maximum_price: price("30"),
         starting_balance: 100 * DOLLAR,
     };
-    let c = charge(10, price("25")).unwrap();
-    assert_eq!(funded_charge(&s, price("25"), c.debit, 0), Ok(c));
-    assert!(funded_charge(&s, price("30"), 100 * DOLLAR, 0).is_ok());
-    assert_eq!(
-        funded_charge(&s, price("25"), c.debit - 1, 0),
-        Err(PaperError::InsufficientFunds)
-    );
-    assert_eq!(
-        funded_charge(&s, price("25"), c.debit, 1),
-        Err(PaperError::InsufficientFunds)
-    );
-    assert_eq!(
-        funded_charge(&s, price("24.999999"), 100 * DOLLAR, 0),
-        Err(PaperError::Price)
-    );
     assert_eq!(charge(u64::MAX, price("25")), Err(PaperError::Range));
     assert_eq!(charge(1, price("100.000001")), Err(PaperError::Range));
     assert_eq!(charge(1, price("-0.000001")), Err(PaperError::Range));
@@ -904,6 +889,29 @@ fn reopen_refuses_a_settlement_for_a_market_with_no_fills() {
             .get::<_, String>(0))
             .unwrap(),
         "tampered"
+    );
+}
+
+#[test]
+fn public_engine_buys_an_ask_exactly_at_the_price_bounds() {
+    let directory = tempfile::tempdir().unwrap();
+    let engine = Engine::open(directory.path().join("paper.sqlite")).unwrap();
+    let mut start = scenario(saved(&engine));
+    start.settings.minimum_price = price("25");
+    start.settings.maximum_price = price("25");
+    let reply = engine.paper_start(start).unwrap();
+    let mut driver = Driver {
+        engine: &engine,
+        context: reply.context.unwrap(),
+        ordinal: 0,
+        summary: reply.summary,
+    };
+    driver.prepare();
+    driver.input(61000, Payload::Book(driver.book(10_000_000)));
+    assert_eq!(driver.summary.cash, "9736870000");
+    assert_eq!(
+        latest_receipt(&driver).attempt_state.as_deref(),
+        Some("full")
     );
 }
 

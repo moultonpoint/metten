@@ -1203,6 +1203,34 @@ fn failed_retry_of_a_stopped_runs_go_id_leaves_it_stopped() {
 }
 
 #[test]
+fn failure_after_a_fresh_go_creates_its_run_fences_that_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paper.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    let start = scenario(saved(&engine));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    // Only the reply's completion-revision read uses this column, after the run is created.
+    db.execute_batch("ALTER TABLE paper_runs RENAME COLUMN completed_revision TO moved")
+        .unwrap();
+    assert_eq!(
+        engine.paper_start(start.clone()).unwrap_err().code,
+        "storage"
+    );
+    assert!(engine.paper_effective().0);
+    let saved: (String, Option<String>) = db
+        .query_row(
+            "SELECT control_state,error_code FROM paper_runs WHERE start_uuid=?1",
+            [&start.start_uuid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(saved, ("unresolved".into(), Some("storage".into())));
+    // Stopping all runs on drop reads the column.
+    db.execute_batch("ALTER TABLE paper_runs RENAME COLUMN moved TO completed_revision")
+        .unwrap();
+}
+
+#[test]
 fn invalid_source_clock_is_rejected_before_pending_receipt_and_can_be_corrected() {
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();

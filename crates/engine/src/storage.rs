@@ -1552,6 +1552,20 @@ mod paper_transaction_tests {
     use crate::{paper::*, strategy::*};
 
     #[test]
+    fn paper_venue_waits_longer_for_the_write_lock_than_the_recorder() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("paper.sqlite");
+        let (recorder, _) = Recorder::open(&path).unwrap();
+        let venue = PaperVenue::open(&path).unwrap();
+        let timeout = |c: &Connection| {
+            c.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        assert_eq!(timeout(&venue.connection), 2000);
+        assert_eq!(timeout(&recorder.connection), 250);
+    }
+
+    #[test]
     fn terminal_outcome_and_settlement_are_idempotent_and_conflicts_preserve_money() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("paper.sqlite");

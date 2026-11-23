@@ -51,15 +51,19 @@ impl Venue for Observed {
         if plan.exit_before_accept {
             std::process::exit(86);
         }
-        if plan.hold_write_lock {
+        let holder = plan.hold_write_lock.then(|| {
             let writer = Connection::open(self.db.path().unwrap()).unwrap();
             writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let release = std::time::Instant::now() + std::time::Duration::from_millis(600);
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(600));
+                std::thread::sleep(release.saturating_duration_since(std::time::Instant::now()));
                 writer.execute_batch("ROLLBACK").unwrap();
-            });
-        }
+            })
+        });
         let reply = self.inner.submit(order);
+        if let Some(holder) = holder {
+            holder.join().unwrap();
+        }
         if plan.exit_after_accept {
             std::process::exit(86);
         }

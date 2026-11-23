@@ -289,3 +289,20 @@ test('a history read failure leaves the recording error visible and reports itse
   assert.equal(h.element('paper-journal-error').textContent, '');
   assert.match(h.element('paper-error').textContent, /Recording could not be confirmed/);
 });
+
+test('a failed More markets read keeps the previous page and reports itself beside the journal', async t => {
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ control_state: 'stopped', pending_holdings: true }));
+    if (args.operation === 'history') { if (args.before_paper_market_id) throw { code: 'storage', detail: 'private-marker' }; return { kind: 'history', page: { markets: [receipt()], next_cursor: '2' } }; }
+    throw new Error('Unexpected operation');
+  } });
+  await open(h);
+  h.click('paper-more'); await h.flush();
+  assert.match(h.element('paper-history').children[0].children[0].textContent, /KXBTC15M-PAPER-NEXT/);
+  assert.match(h.element('paper-journal-error').textContent, /More markets could not be read/);
+  assert.doesNotMatch(h.element('paper-journal-error').textContent, /private-marker/);
+  assert.equal(h.element('paper-error').textContent, '');
+  assert.equal(h.element('paper-status').textContent, 'Stopped · purchases remain stopped');
+  assert.equal(h.element('paper-settle').disabled, false);
+  assert.equal(h.element('paper-more').disabled, false);
+});

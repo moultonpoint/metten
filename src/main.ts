@@ -458,7 +458,7 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
       const response = await invoke<PaperResponse>('paper', { operation: 'history', before_paper_market_id: paperCursor });
       if (!current()) return;
       if (response.kind !== 'history') throw new Error('Unexpected paper history');
-      paperHistory = response.page.markets; paperCursor = response.page.next_cursor; renderPaperHistory();
+      paperHistory = response.page.markets; paperCursor = response.page.next_cursor; element('paper-journal-error').textContent = ''; renderPaperHistory();
     }
     if (kind === 'detail' && paperSelection) {
       const selection = { ...paperSelection }, generation = paperSelectionGeneration;
@@ -484,6 +484,7 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
     }
   } catch {
     if (!current() || (kind === 'detail' || kind === 'evidence_more') && selectedGeneration !== paperSelectionGeneration) return;
+    if (kind === 'more') { element('paper-journal-error').textContent = 'More markets could not be read. This page remains visible; choose More markets to try again.'; return; }
     if (kind === 'summary') { paperUnavailable = true; element('paper-status').textContent = 'Paper status unavailable · Pause remains available'; }
     element('paper-error').textContent = 'Paper state could not be read. Last confirmed history remains visible. Pause purchases and refresh status.';
   } finally {

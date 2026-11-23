@@ -139,6 +139,44 @@ pub fn simulate(
     })
 }
 
+/// One controlled IOC request, rebuilt from its durable attempt for dispatch and lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Order {
+    pub client_order_id: String,
+    pub source_market_id: String,
+    pub source_contract_id: String,
+    pub side: Side,
+    pub quantity: u64,
+    pub price: Decimal,
+    pub available_millionths: u64,
+}
+
+/// The execution venue. The engine sends each client order id at most once, only after its
+/// dispatch marker commits, and never relies on the venue to deduplicate a repeat.
+pub trait Venue: Send {
+    /// Executes one IOC. `None` means no reply: the order may or may not have been accepted.
+    fn submit(&mut self, order: &Order) -> Option<Fill>;
+    /// The venue's durable record of one order. `None` covers not found, incomplete or
+    /// unreadable records, none of which establishes a zero fill.
+    fn lookup(&mut self, client_order_id: &str) -> Option<(Order, Fill)>;
+}
+
+/// A run's or market's latest interrupted or unconfirmed attempt, for explaining the check.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Recovery {
+    pub paper_market_id: String,
+    pub source_market_id: String,
+    pub side: String,
+    pub requested_quantity: String,
+    /// `intent`, `dispatched` or `unknown` while checking; otherwise the confirmed result.
+    pub state: String,
+    pub filled_quantity: String,
+    /// Confirmed fills in that market, including earlier attempts.
+    pub confirmed_quantity: String,
+    /// `no_outcome`, `restart` or `legacy`.
+    pub interrupted: Option<String>,
+}
+
 pub fn payout(quantity: u64, won: bool) -> Result<i64, PaperError> {
     if quantity > 1_000_000 {
         return Err(PaperError::Range);
@@ -322,10 +360,69 @@ pub struct RunSummary {
     pub history_revision: String,
     pub start_uuid: String,
     pub pending_holdings: bool,
+    pub recovery: Option<Recovery>,
 }
 
 use crate::{sources, storage::Recorder, strategy};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+fn lock(store: &Mutex<Recorder>) -> Result<MutexGuard<'_, Recorder>, Failure> {
+    store.lock().map_err(|_| Failure::new("storage"))
+}
+
+/// Settles each unconfirmed attempt from venue evidence alone, never by sending again. An intent
+/// without its dispatch marker was never sent and is canceled. A possibly sent order keeps its
+/// reservation and blocks purchases until the venue reports that exact order; a lookup miss or
+/// incomplete record leaves it unknown. Lookups run without the recorder lock. A report that
+/// contradicts the request is recorded on the run and returned as `report_conflict`.
+pub(crate) fn reconcile(
+    store: &Mutex<Recorder>,
+    venue: &mut dyn Venue,
+    run: Option<i64>,
+    cause: &str,
+) -> Result<(), Failure> {
+    let pending = lock(store)?.paper_unconfirmed(run)?;
+    for (run, attempt, state) in pending {
+        let order = {
+            let mut recorder = lock(store)?;
+            recorder.paper_interrupt(run, attempt, cause)?;
+            if state == "intent" {
+                recorder.paper_finish_attempt(run, attempt, None)?;
+                continue;
+            }
+            recorder.paper_order(attempt)?
+        };
+        let Some((reported, fill)) = venue.lookup(&order.client_order_id) else {
+            continue;
+        };
+        let mut recorder = lock(store)?;
+        let result = if reported == order {
+            recorder.paper_finish_attempt(run, attempt, Some(fill))
+        } else {
+            Err(Failure::new("input_conflict"))
+        };
+        conflict(&mut recorder, run, attempt, result)?;
+    }
+    Ok(())
+}
+
+/// A report that contradicts the request or an earlier report blocks the run's purchases for good.
+fn conflict(
+    recorder: &mut Recorder,
+    run: i64,
+    attempt: i64,
+    result: Result<(), Failure>,
+) -> Result<(), Failure> {
+    match result {
+        Err(error) if error.code == "input_conflict" => {
+            // The durable block first: an exit before the cause is saved still leaves it blocked.
+            recorder.paper_control(run, "unresolved", true, Some("report_conflict"))?;
+            recorder.paper_interrupt(run, attempt, "no_outcome")?;
+            Err(Failure::new("report_conflict"))
+        }
+        other => other,
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct InputContext {
@@ -405,7 +502,8 @@ impl Owner {
     pub(crate) fn handle(
         &mut self,
         job: Job,
-        recorder: &mut Recorder,
+        store: &Mutex<Recorder>,
+        venue: &mut dyn Venue,
         fence: &Arc<Mutex<Fence>>,
     ) -> Result<Reply, Failure> {
         let include_bindings = matches!(&job, Job::Start(_) | Job::Context(_));
@@ -414,6 +512,7 @@ impl Owner {
         let result = (|| {
             let (summary, context) = match job {
                 Job::Start(start) => {
+                    let mut recorder = lock(store)?;
                     let version = match recorder
                         .strategy_detail(start.strategy_version_id)
                         .map_err(|_| Failure::new("storage"))?
@@ -478,7 +577,7 @@ impl Owner {
                         .as_ref()
                         .filter(|r| r.id == id && r.open)
                         .ok_or_else(|| Failure::new("stopped_context"))?;
-                    (recorder.paper_summary(id)?, Some(run.context()))
+                    (lock(store)?.paper_summary(id)?, Some(run.context()))
                 }
                 Job::Input(input) => {
                     let run = self
@@ -486,8 +585,8 @@ impl Owner {
                         .as_mut()
                         .filter(|r| r.id == input.context.run_id && r.open)
                         .ok_or_else(|| Failure::new("stopped_context"))?;
-                    run.input(&input, recorder, fence)?;
-                    (recorder.paper_summary(run.id)?, Some(run.context()))
+                    run.input(&input, store, venue, fence)?;
+                    (lock(store)?.paper_summary(run.id)?, Some(run.context()))
                 }
                 Job::Control(id, control) => {
                     let run = self
@@ -495,8 +594,13 @@ impl Owner {
                         .as_mut()
                         .filter(|r| r.id == id && r.open)
                         .ok_or_else(|| Failure::new("stale_run"))?;
+                    let mut recorder = lock(store)?;
                     let state = match control {
                         Control::Pause => "paused",
+                        // Resume never lifts the block on a purchase still being checked.
+                        Control::Resume if recorder.paper_has_unconfirmed_purchase(id)? => {
+                            return Err(Failure::new("checking_purchase"));
+                        }
                         Control::Resume => {
                             if run.participating {
                                 "active"
@@ -537,9 +641,12 @@ impl Owner {
                     if self.run.as_ref().is_some_and(|r| r.id == id && r.open) {
                         return Err(Failure::new("run_active"));
                     }
-                    (recorder.paper_check_settlement(id)?, None)
+                    // A stopped run retries its purchase check before settling from the manifest.
+                    reconcile(store, venue, Some(id), "no_outcome")?;
+                    (lock(store)?.paper_check_settlement(id)?, None)
                 }
             };
+            let recorder = lock(store)?;
             let completion_revision = recorder.paper_completion_revision(
                 summary
                     .run_id
@@ -573,22 +680,25 @@ impl Owner {
                 "stale_run",
                 "run_active",
                 "stopped_context",
+                "checking_purchase",
             ]
             .contains(&error.code)
         {
             fence.lock().unwrap().paused = true;
             if let Some(run) = self.run.as_mut() {
                 run.open = false;
-                let _ = recorder.paper_control(
-                    run.id,
-                    if error.code == "storage" || error.code == "unconfirmed" {
-                        "unresolved"
-                    } else {
-                        "stopped"
-                    },
-                    true,
-                    Some(error.code),
-                );
+                if let Ok(mut recorder) = lock(store) {
+                    let _ = recorder.paper_control(
+                        run.id,
+                        if error.code == "storage" || error.code == "unconfirmed" {
+                            "unresolved"
+                        } else {
+                            "stopped"
+                        },
+                        true,
+                        Some(error.code),
+                    );
+                }
             }
         }
         result
@@ -620,9 +730,21 @@ impl Owner {
         }
         Ok(())
     }
-    pub(crate) fn stop(&mut self, recorder: &mut Recorder) -> Result<(), Failure> {
+    pub(crate) fn stop(
+        &mut self,
+        store: &Mutex<Recorder>,
+        venue: &mut dyn Venue,
+    ) -> Result<(), Failure> {
         if let Some(run) = self.run.as_mut() {
             run.open = false;
+        }
+        // Quit checks in-progress purchases; a conflict is already recorded on its run.
+        match reconcile(store, venue, None, "no_outcome") {
+            Err(error) if error.code != "report_conflict" => return Err(error),
+            _ => (),
+        }
+        let mut recorder = lock(store)?;
+        if let Some(run) = &self.run {
             recorder.paper_finalize_markets(run.id)?;
         }
         recorder.paper_stop_all()
@@ -705,7 +827,8 @@ impl Run {
     fn input(
         &mut self,
         input: &Input,
-        recorder: &mut Recorder,
+        store: &Mutex<Recorder>,
+        venue: &mut dyn Venue,
         fence: &Arc<Mutex<Fence>>,
     ) -> Result<(), Failure> {
         if input.context.generation != self.generation
@@ -746,12 +869,13 @@ impl Run {
         }
         let canonical = input.canonical()?;
         let at = i64::try_from(input.virtual_ms).map_err(|_| Failure::new("range"))?;
-        if recorder
-            .paper_begin_input(self.id, input.ordinal, &canonical, at)?
-            .is_some()
-        {
+        let replayed = lock(store)?.paper_begin_input(self.id, input.ordinal, &canonical, at)?;
+        if replayed.is_some() {
             return Ok(());
         }
+        // Monitoring continues while a purchase is checked: consult the venue before deciding.
+        reconcile(store, venue, Some(self.id), "no_outcome")?;
+        let mut recorder = lock(store)?;
         if let Payload::Settlement(entry) = &input.payload {
             if !self.start.settlement_manifest.contains(entry) {
                 return Err(Failure::new("input_conflict"));
@@ -948,7 +1072,8 @@ impl Run {
                         .stamp(&dependencies)
                         .map_err(|_| Failure::new("unavailable_evidence"))?;
                     if self.sources.is_current(&stamp) && !fence.lock().unwrap().paused {
-                        match recorder.paper_intent(self.id, &candidate, book, at) {
+                        let intent = recorder.paper_intent(self.id, &candidate, book, at);
+                        match intent {
                             Err(error)
                                 if error.code == "insufficient_funds" || error.code == "price" =>
                             {
@@ -962,24 +1087,33 @@ impl Run {
                             Err(error) => return Err(error),
                             Ok(None) => {}
                             Ok(Some(attempt)) => {
-                                let dispatch = {
-                                    let f = fence.lock().unwrap();
-                                    !f.paused && !f.quit && self.open
-                                };
-                                if dispatch {
-                                    let outcome = simulate(
-                                        candidate.remaining_quantity,
-                                        book.ask,
-                                        book.available_millionths,
-                                    )?;
-                                    recorder.paper_finish_attempt(
-                                        self.id,
-                                        attempt,
-                                        at,
-                                        Some(outcome),
-                                    )?;
+                                let f = fence.lock().unwrap();
+                                if !f.paused && !f.quit && self.open {
+                                    // Pause and Quit wait for the marker: either they win, or the order is dispatched.
+                                    let order = recorder.paper_dispatch(self.id, attempt, at)?;
+                                    drop(f);
+                                    drop(recorder);
+                                    let reply = venue.submit(&order);
+                                    recorder = lock(store)?;
+                                    match reply {
+                                        Some(fill) => {
+                                            let result = recorder.paper_finish_attempt(
+                                                self.id,
+                                                attempt,
+                                                Some(fill),
+                                            );
+                                            conflict(&mut recorder, self.id, attempt, result)?
+                                        }
+                                        // Unknown, not zero: the reservation and block remain.
+                                        None => recorder.paper_interrupt(
+                                            self.id,
+                                            attempt,
+                                            "no_outcome",
+                                        )?,
+                                    }
                                 } else {
-                                    recorder.paper_finish_attempt(self.id, attempt, at, None)?;
+                                    drop(f);
+                                    recorder.paper_finish_attempt(self.id, attempt, None)?;
                                 }
                             }
                         }
@@ -1280,6 +1414,7 @@ pub struct MarketReceipt {
     pub winning_side: Option<String>,
     pub settlement_virtual_ms: Option<String>,
     pub settlement_recorded_at: Option<String>,
+    pub recovery: Option<Recovery>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct HistoryPage {

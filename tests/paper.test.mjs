@@ -206,3 +206,41 @@ test('an actual objective or ambiguous-side blocker remains the main explanation
   assert.match(paperReceipt(receipt({attempt_state:null,reason:'objective_blocked',primary_witness})).reason,/objective safeguards/i);
   assert.match(paperReceipt(receipt({attempt_state:null,reason:'ambiguous_side',primary_witness})).reason,/unique purchase side/i);
 });
+
+const recovery = overrides => ({ paper_market_id: '2', source_market_id: 'KXBTC15M-PAPER-NEXT', side: 'no', requested_quantity: '6', state: 'dispatched', filled_quantity: '0', confirmed_quantity: '4', interrupted: 'no_outcome', ...overrides });
+
+test('an uncertain purchase shows the exact paused wording, keeps confirmed holdings and blocks Resume', async t => {
+  const checking = recovery();
+  const h = await harness(t, { paper(args) { return args.operation === 'snapshot' ? snapshot(run({ reserved: '157880000', recovery: checking }), { effective_paused: true }) : history([receipt({ attempt_state: 'dispatched', reason: 'checking_purchase', attempt_count: '2', filled_quantity: '4', cost: '100000000', fee: '5250000', debit: '105250000', recovery: checking })]); } });
+  await open(h);
+  assert.equal(h.element('paper-status').textContent, 'Trading paused — checking a purchase');
+  assert.equal(h.element('paper-recovery').textContent, 'Checking a purchase of 6 NO in KXBTC15M-PAPER-NEXT. Its reply was not recorded. No other purchase is sent, and the funds reserved for this purchase stay held until its outcome is confirmed. Confirmed in this market: 4.');
+  assert.equal(h.element('paper-resume').disabled, true);
+  assert.equal(h.element('paper-result-title').textContent, 'Purchase outcome unconfirmed');
+  assert.match(h.element('paper-reason').textContent, /outcome is being checked/);
+});
+
+test('a recovered attempt reports its actual result in Now and in the market history', async t => {
+  const done = recovery({ state: 'partial', filled_quantity: '3', confirmed_quantity: '7' });
+  const h = await harness(t, { paper(args) { return args.operation === 'snapshot' ? snapshot(run({ control_state: 'stopped', recovery: done })) : history([receipt({ attempt_state: 'partial', reason: 'confirmed_partial_fill_pending_settlement', attempt_count: '2', filled_quantity: '7', cost: '175000000', fee: '9190000', debit: '184190000', recovery: done })]); } });
+  await open(h);
+  assert.equal(h.element('paper-status').textContent, 'Stopped · purchases remain stopped');
+  const result = 'Purchase check complete: 3 of 6 NO in KXBTC15M-PAPER-NEXT filled. Its reply was not recorded. Confirmed in this market: 7.';
+  assert.equal(h.element('paper-recovery').textContent, result);
+  const facts = Object.fromEntries(paperReceipt(receipt({ attempt_state: 'partial', filled_quantity: '7', recovery: done })).facts);
+  assert.equal(facts['Purchase check'], result);
+  assert.equal(facts['Confirmed quantity'], '7');
+  assert.equal(h.element('paper-settle').disabled, false);
+});
+
+test('a purchase still unknown after restart stays paused and offers only the explicit check', async t => {
+  const h = await harness(t, { paper(args) { return args.operation === 'snapshot' ? snapshot(run({ control_state: 'unresolved', pending_holdings: false, recovery: recovery({ requested_quantity: '10', confirmed_quantity: '0', interrupted: 'restart' }) })) : history([]); } });
+  await open(h);
+  assert.equal(h.element('paper-status').textContent, 'Trading paused — checking a purchase');
+  assert.match(h.element('paper-recovery').textContent, /Metten restarted before its outcome was recorded/);
+  assert.equal(h.element('paper-settle').disabled, false);
+  assert.equal(h.element('paper-go').disabled, true);
+  assert.equal(h.element('paper-resume').disabled, true);
+  const canceled = paperReceipt(receipt({ attempt_state: 'canceled', filled_quantity: '0', recovery: recovery({ state: 'canceled', requested_quantity: '10', confirmed_quantity: '0', interrupted: 'restart' }) }));
+  assert.match(Object.fromEntries(canceled.facts)['Purchase check'], /was never sent and was canceled/);
+});

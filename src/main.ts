@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Action, Snapshot, StrategyRequest, StrategyResponse, StrategyDetail, SourceName, SourceRequest, SourceResponse, SourceSnapshot, ProviderCredentialResponse } from './contract';
-import { presentation, strategyFailure, sourceFailure, sourcePresentation, paperMoney, paperFailure, paperReceipt } from './view';
+import { presentation, strategyFailure, sourceFailure, sourcePresentation, paperMoney, paperFailure, paperReceipt, paperChecking, paperRecovery } from './view';
 import './style.css';
 import learningExample from '../examples/learning.json?raw';
 import type { PaperRequest, PaperResponse, PaperSnapshot, PaperReceipt } from './contract';
@@ -332,12 +332,14 @@ function paperControls() {
   const run = paperSnapshot?.run;
   const active = !!run && run.control_state !== 'stopped';
   const holding = run?.pending_holdings ?? false;
+  const checking = !!run && paperChecking(run.recovery);
   paperSettings.disabled = active || holding || paperStartRequest !== null || paperActionPending || (paperUnavailable && !!run);
   element<HTMLButtonElement>('paper-go').disabled = paperUnavailable || active || holding || paperActionPending || (!paperStartRequest && !paperVersion.value);
   element<HTMLButtonElement>('paper-pause').disabled = !run;
-  element<HTMLButtonElement>('paper-resume').disabled = paperUnavailable || !active || !paperSnapshot?.effective_paused || run?.control_state === 'unresolved' || paperActionPending;
+  element<HTMLButtonElement>('paper-resume').disabled = paperUnavailable || !active || !paperSnapshot?.effective_paused || run?.control_state === 'unresolved' || checking || paperActionPending;
   element<HTMLButtonElement>('paper-stop').disabled = paperUnavailable || !active || paperActionPending;
-  element<HTMLButtonElement>('paper-settle').disabled = paperUnavailable || !run || active || !holding || paperActionPending;
+  // A stopped run with an unconfirmed purchase retries its check here before any settlement.
+  element<HTMLButtonElement>('paper-settle').disabled = paperUnavailable || !run || !(run.control_state === 'unresolved' || (!active && holding)) || paperActionPending;
   element<HTMLButtonElement>('paper-more').disabled = paperReadBusy || paperCursor === null;
   if (run && paperSettings.disabled && !paperStartRequest) {
     paperVersion.value = run.strategy_version_id;
@@ -360,8 +362,9 @@ function renderPaper(snapshot: PaperSnapshot): boolean {
   if (run && run.run_id !== prior?.run?.run_id) element<HTMLDetailsElement>('paper-settings-details').open = false;
   if (run && paperStartRequest?.start_uuid === run.start_uuid) paperStartRequest = null;
   const states: Record<string, string> = { collecting: 'Collecting required evidence', waiting: 'Waiting for the next full market boundary', active: 'Monitoring the current paper market', paused: 'Purchases paused · monitoring continues', stopped: 'Stopped · purchases remain stopped', unresolved: 'Stopped · an operation remains unconfirmed' };
-  element('paper-status').textContent = run ? (snapshot.effective_paused && run.control_state !== 'stopped' && run.control_state !== 'unresolved' ? 'Purchases paused · monitoring continues' : states[run.control_state]) : 'Ready for a controlled paper example';
+  element('paper-status').textContent = run && paperChecking(run.recovery) ? 'Trading paused — checking a purchase' : run ? (snapshot.effective_paused && run.control_state !== 'stopped' && run.control_state !== 'unresolved' ? 'Purchases paused · monitoring continues' : states[run.control_state]) : 'Ready for a controlled paper example';
   element('paper-fixed').textContent = run ? `Run ${run.run_id} · Version ${run.strategy_version_id} · ${run.quantity} contracts per market · ${run.minimum_price}–${run.maximum_price}¢ · starting balance ${paperMoney(run.starting_balance)} · cash ${paperMoney(run.cash)} · reserved ${paperMoney(run.reserved)}\nSynthetic clock ${run.virtual_frontier_ms} ms · ${snapshot.stop_after_market ? 'Stop after market requested · ' : ''}${run.pending_ordinal === null ? 'Displayed accounting is committed.' : 'An input remains unconfirmed; inspect details.'}` : 'Choose a saved version and fixed settings. Go waits for an eligible full boundary.';
+  element('paper-recovery').textContent = run?.recovery ? paperRecovery(run.recovery) : '';
   const errorCode = snapshot.playback_error ?? run?.error_code;
   element('paper-error').textContent = errorCode ? paperFailure({ code: errorCode }) : paperRequestError;
   paperControls();

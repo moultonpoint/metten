@@ -35,6 +35,13 @@ export interface PaperRun {
   completed_ordinal: string; pending_ordinal: string | null; error_code: string | null;
   quantity: string; minimum_price: string; maximum_price: string; starting_balance: string;
   fee_model: string; simulation_model: string; scenario_revision: string; go_utc_ms: string;
+  recovery: PaperRecovery | null;
+}
+/** Latest interrupted or unconfirmed attempt: what is being checked, or how the check ended. */
+export interface PaperRecovery {
+  paper_market_id: string; source_market_id: string; side: string; requested_quantity: string;
+  state: 'intent' | 'dispatched' | 'unknown' | 'full' | 'partial' | 'zero' | 'canceled';
+  filled_quantity: string; confirmed_quantity: string; interrupted: 'no_outcome' | 'restart' | 'legacy' | null;
 }
 export interface PaperWitness {
   path: string; root_path: string; root_kind: string; root_status: string; option_id: string | null; checkpoint_id: string | null;
@@ -49,6 +56,7 @@ export interface PaperReceipt {
   side: string | null; price: string | null; available_millionths: string | null; attempt_virtual_ms: string | null;
   filled_quantity: string | null; cost: string | null; fee: string | null; debit: string | null; payout: string | null;
   settled_net: string | null; winning_side: string | null; settlement_virtual_ms: string | null; settlement_recorded_at: string | null;
+  recovery: PaperRecovery | null;
 }
 export interface PaperSettings { quantity: string; minimum_price: string; maximum_price: string; starting_balance: string }
 export type PaperRequest =

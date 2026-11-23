@@ -1,4 +1,4 @@
-import type { Snapshot, SourceSnapshot, SourceName, PaperReceipt, PaperWitness } from './contract';
+import type { Snapshot, SourceSnapshot, SourceName, PaperReceipt, PaperWitness, PaperRecovery } from './contract';
 
 export function presentation(snapshot: Snapshot) {
   const failed = snapshot.recording_error !== null;
@@ -61,6 +61,8 @@ export function paperFailure(failure: unknown): string {
     unsupported_input: 'This controlled example supports Kalshi asks with no historical lookback. Choose a compatible saved version.',
     run_active: 'Finish the current run and resolve its holdings before starting another example.', stale_run: 'This control belongs to an older run. Refresh paper status.',
     stopped_context: 'Purchases are stopped. Reopening never restarts playback.', unresolved: 'A purchase outcome is unresolved. New purchases remain blocked; confirmed history is retained.',
+    checking_purchase: 'A purchase is still being checked. Purchases stay paused until its outcome is confirmed.',
+    report_conflict: 'The venue record contradicts the recorded purchase request. Confirmed accounting is kept and purchases remain blocked.',
     storage: 'Recording could not be confirmed. Purchases are fenced. Inspect retained history and retry Quit after fixing storage.',
     unconfirmed: 'This action is not confirmed. Inspect paper status before retrying.', resource_limit: 'The controlled input or response exceeds its supported bound. Purchases remain blocked.',
     input_conflict: 'Conflicting paper input was refused. Purchases are stopped.', input_gap: 'A required paper input is missing. Purchases are stopped.', quitting: 'The application is stopping.',
@@ -75,6 +77,7 @@ export function paperReason(reason: string): string {
     insufficient_quantity: 'No contracts filled from the finite observed quantity. A zero fill is confirmed; no fee was charged.',
     settled: 'The identified synthetic outcome is recorded and the account reconciles after fees.',
     canceled_before_dispatch: 'The proposal was canceled before dispatch. No purchase was confirmed.',
+    checking_purchase: 'A purchase may have been sent and its outcome is being checked. Its reserved funds stay held; confirmed contracts are kept.',
     insufficient_funds: 'The whole objective, including its fee, could not be funded. Quantity was not reduced.',
     evidence_mismatch: 'Waiting for a finite execution book matching the exact evaluated ask identity and price.',
     purchases_paused: 'The rule qualified while purchases were paused. Monitoring continued; no purchase was confirmed.',
@@ -116,6 +119,7 @@ export function paperReceipt(receipt: PaperReceipt) {
     : state === 'canceled' ? 'Canceled before dispatch' : 'No confirmed purchase';
   const facts: [string, string][] = [['Paper run', receipt.run_id], ['Saved strategy version', receipt.strategy_version_id], ['Market', receipt.source_market_id], ['Requested quantity', receipt.requested_quantity], ['Confirmed quantity', held ? receipt.filled_quantity ?? '0' : state === null ? 'No purchase' : 'Unconfirmed']];
   if (several) facts.push(['Attempts', receipt.attempt_count]);
+  if (receipt.recovery) facts.push(['Purchase check', paperRecovery(receipt.recovery)]);
   if (receipt.side !== null) facts.push(['Side', receipt.side.toUpperCase()]);
   if (receipt.price !== null) facts.push([several ? 'Latest attempt price per contract' : 'Requested price per contract', paperMoney(receipt.price)]);
   if (receipt.attempt_virtual_ms !== null) facts.push([several ? 'Latest attempt time' : 'Attempt time', `${receipt.attempt_virtual_ms} ms on the synthetic clock`]);
@@ -128,6 +132,19 @@ export function paperReceipt(receipt: PaperReceipt) {
   const block = check && ['price', 'insufficient_funds', 'purchases_paused', 'evidence_mismatch'].includes(receipt.reason)
     ? ` At ${check.evaluated_at_ms} ms, ${check.offered_price === null ? 'the offered price was unavailable' : 'the offered price was ' + check.offered_price + '¢'}; permitted range ${check.minimum_price}–${check.maximum_price}¢.${receipt.reason === 'insufficient_funds' && check.required_debit !== null ? ' Full debit required ' + paperMoney(check.required_debit) + '; available ' + paperMoney(check.available_funds) + '.' : ''}` : '';
   return { title, reason: (['condition_false', 'unavailable', 'unavailable_evidence', 'eligible'].includes(receipt.reason) && receipt.primary_witness ? paperWitness(receipt.primary_witness) : paperReason(receipt.reason) + (['ambiguous_side', 'objective_blocked'].includes(receipt.reason) && receipt.primary_witness ? ' ' + paperWitness(receipt.primary_witness) : '')) + block, facts };
+}
+
+export function paperChecking(recovery: PaperRecovery | null | undefined): boolean {
+  return !!recovery && ['intent', 'dispatched', 'unknown'].includes(recovery.state);
+}
+export function paperRecovery(recovery: PaperRecovery): string {
+  const causes: Record<string, string> = { no_outcome: 'Its reply was not recorded.', restart: 'Metten restarted before its outcome was recorded.', legacy: 'An earlier Metten recorded it without a dispatch marker, so sending cannot be ruled out.' };
+  const cause = recovery.interrupted && Object.hasOwn(causes, recovery.interrupted) ? ' ' + causes[recovery.interrupted] : '';
+  const attempt = `${recovery.requested_quantity} ${recovery.side.toUpperCase()} in ${recovery.source_market_id}`;
+  const held = ` Confirmed in this market: ${recovery.confirmed_quantity}.`;
+  if (paperChecking(recovery)) return `Checking a purchase of ${attempt}.${cause} No other purchase is sent, and the funds reserved for this purchase stay held until its outcome is confirmed.${held}`;
+  if (recovery.state === 'canceled') return `Purchase check complete: the attempt for ${attempt} was never sent and was canceled.${cause}${held}`;
+  return `Purchase check complete: ${recovery.filled_quantity} of ${attempt} filled.${cause}${held}`;
 }
 
 export function paperQuantity(amount: string): string {

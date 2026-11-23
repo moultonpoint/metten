@@ -62,28 +62,13 @@ fn combined_rounding_preserves_fractional_cent_cost() {
 }
 
 #[test]
-fn whole_objective_is_funded_and_prices_are_inclusive() {
+fn charge_and_settings_reject_out_of_range_values() {
     let s = Settings {
         quantity: 10,
         minimum_price: price("25"),
         maximum_price: price("30"),
         starting_balance: 100 * DOLLAR,
     };
-    let c = charge(10, price("25")).unwrap();
-    assert_eq!(funded_charge(&s, price("25"), c.debit, 0), Ok(c));
-    assert!(funded_charge(&s, price("30"), 100 * DOLLAR, 0).is_ok());
-    assert_eq!(
-        funded_charge(&s, price("25"), c.debit - 1, 0),
-        Err(PaperError::InsufficientFunds)
-    );
-    assert_eq!(
-        funded_charge(&s, price("25"), c.debit, 1),
-        Err(PaperError::InsufficientFunds)
-    );
-    assert_eq!(
-        funded_charge(&s, price("24.999999"), 100 * DOLLAR, 0),
-        Err(PaperError::Price)
-    );
     assert_eq!(charge(u64::MAX, price("25")), Err(PaperError::Range));
     assert_eq!(charge(1, price("100.000001")), Err(PaperError::Range));
     assert_eq!(charge(1, price("-0.000001")), Err(PaperError::Range));
@@ -886,6 +871,74 @@ fn public_engine_start_uuid_rejects_conflicting_market_identity_and_reopen_check
 }
 
 #[test]
+fn reopen_refuses_a_settlement_for_a_market_with_no_fills() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("paper.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    engine.paper_start(scenario(saved(&engine))).unwrap();
+    engine.stop_and_save().unwrap();
+    drop(engine);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    // Payout 0 leaves cash consistent, so only the settlement check can catch it.
+    assert_eq!(db.execute("INSERT INTO paper_settlements(run_id,paper_market_id,outcome_id,outcome_revision,winning_side,effective_virtual_ms,held_quantity,payout,net,close_day) SELECT run_id,paper_market_id,'tampered','synthetic_final_v1','yes',0,1,0,0,close_day FROM paper_markets LIMIT 1", []).unwrap(), 1);
+    drop(db);
+    assert!(Engine::open(&path).is_err());
+    let db = rusqlite::Connection::open(path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT outcome_id FROM paper_settlements", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "tampered"
+    );
+}
+
+#[test]
+fn public_engine_buys_an_ask_exactly_at_the_price_bounds() {
+    let debit = charge(10, price("25")).unwrap().debit;
+    // Exactly the fee-inclusive debit buys; one unit less buys nothing.
+    for (balance, cash, attempts) in [(debit, 0, 1), (debit - 1, debit - 1, 0)] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("paper.sqlite");
+        let engine = Engine::open(&path).unwrap();
+        let mut start = scenario(saved(&engine));
+        start.settings.minimum_price = price("25");
+        start.settings.maximum_price = price("25");
+        start.settings.starting_balance = balance;
+        let reply = engine.paper_start(start).unwrap();
+        let mut driver = Driver {
+            engine: &engine,
+            context: reply.context.unwrap(),
+            ordinal: 0,
+            summary: reply.summary,
+        };
+        driver.prepare();
+        driver.input(61000, Payload::Book(driver.book(10_000_000)));
+        assert_eq!(driver.summary.cash, cash.to_string());
+        assert_eq!(driver.summary.reserved, "0");
+        assert_eq!(driver.summary.pending_ordinal, None);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let count = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(
+            count("SELECT count(*) FROM paper_attempts WHERE state='full'"),
+            attempts
+        );
+        assert_eq!(count("SELECT count(*) FROM paper_attempts"), attempts);
+        assert_eq!(count("SELECT count(*) FROM paper_venue_orders"), attempts);
+        if attempts == 0 {
+            assert_eq!(
+                db.query_row(
+                    "SELECT reason FROM paper_markets WHERE participated=1",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "insufficient_funds"
+            );
+        }
+    }
+}
+
+#[test]
 fn public_engine_price_refusal_keeps_the_first_specific_check_at_market_end() {
     let directory = tempfile::tempdir().unwrap();
     let engine = Engine::open(directory.path().join("paper.sqlite")).unwrap();
@@ -1023,6 +1076,158 @@ fn historical_start_retry_does_not_replace_current_run_or_control_target() {
             .unwrap()
             .effective_paused
     );
+}
+
+#[test]
+fn failed_start_leaves_a_different_open_run_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+    let first = scenario(saved(&engine));
+    let one = engine.paper_start(first.clone()).unwrap();
+    engine
+        .paper_control(one.context.unwrap().run_id, Control::StopAfterMarket)
+        .unwrap();
+    let mut second = first.clone();
+    second.start_uuid = "00000000-0000-4000-8000-000000000002".into();
+    let two = engine.paper_start(second.clone()).unwrap();
+    let mut driver = Driver {
+        engine: &engine,
+        context: two.context.unwrap(),
+        ordinal: 0,
+        summary: two.summary,
+    };
+    let run = driver.context.run_id;
+    let before = engine.paper_summary(run).unwrap();
+    assert_eq!(before.error_code, None);
+    let effective = engine.paper_effective();
+    let original = format!("{:?}", driver.context);
+    let untouched = || {
+        assert_eq!(engine.paper_effective(), effective);
+        assert_eq!(
+            format!("{:?}", engine.paper_context(run).unwrap()),
+            original
+        );
+        assert_eq!(engine.paper_summary(run).unwrap(), before);
+    };
+    let mut changed = first.clone();
+    changed.settings.quantity = 9;
+    assert_eq!(
+        engine.paper_start(changed).unwrap_err().code,
+        "input_conflict"
+    );
+    untouched();
+    let mut missing = first;
+    missing.start_uuid = "00000000-0000-4000-8000-000000000003".into();
+    missing.strategy_version_id = 999;
+    assert_eq!(engine.paper_start(missing).unwrap_err().code, "storage");
+    untouched();
+    // The run's original context still accepts input.
+    driver.prepare();
+    assert!(
+        engine
+            .paper_control(run, Control::Pause)
+            .unwrap()
+            .effective_paused
+    );
+    // A conflict against the open run's own Go id still stops that run.
+    second.settings.quantity = 9;
+    assert_eq!(
+        engine.paper_start(second).unwrap_err().code,
+        "input_conflict"
+    );
+    let stopped = engine.paper_summary(run).unwrap();
+    assert_eq!(stopped.control_state, "stopped");
+    assert_eq!(stopped.error_code.as_deref(), Some("input_conflict"));
+}
+
+#[test]
+fn failed_retry_of_the_open_runs_own_go_id_still_fences_that_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+    let mut start = scenario(saved(&engine));
+    let reply = engine.paper_start(start.clone()).unwrap();
+    let context = reply.context.unwrap();
+    assert!(!engine.paper_effective().0);
+    // The strategy lookup fails before the Go id is matched to its run.
+    start.strategy_version_id = 999;
+    assert_eq!(engine.paper_start(start).unwrap_err().code, "storage");
+    assert!(engine.paper_effective().0);
+    let summary = engine.paper_summary(context.run_id).unwrap();
+    assert_eq!(summary.control_state, "unresolved");
+    assert_eq!(summary.error_code.as_deref(), Some("storage"));
+    let input = Input {
+        context,
+        ordinal: 1,
+        virtual_ms: 0,
+        payload: Payload::Source(src::Envelope {
+            clock: src::Clock {
+                at_ms: 0,
+                receipt_ms: 0,
+                received_through_ms: 0,
+                completed_frontier_ms: 0,
+            },
+            provider_identity: None,
+            provider_time_utc: None,
+            event: src::SourceEvent::Connection {
+                provider: src::Provider::Kalshi,
+                token: context.book_token,
+                state: src::Connection::Open,
+            },
+        }),
+    };
+    assert_eq!(
+        engine.paper_input(input).unwrap_err().code,
+        "stopped_context"
+    );
+}
+
+#[test]
+fn failed_retry_of_a_stopped_runs_go_id_leaves_it_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+    let mut first = scenario(saved(&engine));
+    let run = engine.paper_start(first.clone()).unwrap().summary.run_id;
+    let run = run.parse().unwrap();
+    engine.paper_control(run, Control::StopAfterMarket).unwrap();
+    let before = engine.paper_summary(run).unwrap();
+    assert_eq!(before.control_state, "stopped");
+    assert_eq!(before.error_code, None);
+    let mut retry = first.clone();
+    retry.strategy_version_id = 999;
+    assert_eq!(engine.paper_start(retry).unwrap_err().code, "storage");
+    assert_eq!(engine.paper_summary(run).unwrap(), before);
+    first.start_uuid = "00000000-0000-4000-8000-000000000002".into();
+    let fresh = engine.paper_start(first).unwrap();
+    assert_ne!(fresh.summary.run_id, before.run_id);
+    assert!(fresh.context.is_some());
+}
+
+#[test]
+fn failure_after_a_fresh_go_creates_its_run_fences_that_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paper.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    let start = scenario(saved(&engine));
+    let db = rusqlite::Connection::open(&path).unwrap();
+    // Only the reply's completion-revision read uses this column, after the run is created.
+    db.execute_batch("ALTER TABLE paper_runs RENAME COLUMN completed_revision TO moved")
+        .unwrap();
+    assert_eq!(
+        engine.paper_start(start.clone()).unwrap_err().code,
+        "storage"
+    );
+    assert!(engine.paper_effective().0);
+    let saved: (String, Option<String>) = db
+        .query_row(
+            "SELECT control_state,error_code FROM paper_runs WHERE start_uuid=?1",
+            [&start.start_uuid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(saved, ("unresolved".into(), Some("storage".into())));
+    // Stopping all runs on drop reads the column.
+    db.execute_batch("ALTER TABLE paper_runs RENAME COLUMN moved TO completed_revision")
+        .unwrap();
 }
 
 #[test]

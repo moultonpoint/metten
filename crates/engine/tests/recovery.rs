@@ -24,6 +24,8 @@ struct Plan {
     exit_after_accept: bool,
     contradict_replies: bool,
     malformed_replies: bool,
+    /// Another writer holds the workspace write lock for 600 ms as the venue records the order.
+    hold_write_lock: bool,
 }
 #[derive(Clone, Default)]
 struct Probe {
@@ -49,7 +51,19 @@ impl Venue for Observed {
         if plan.exit_before_accept {
             std::process::exit(86);
         }
+        let holder = plan.hold_write_lock.then(|| {
+            let writer = Connection::open(self.db.path().unwrap()).unwrap();
+            writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let release = std::time::Instant::now() + std::time::Duration::from_millis(600);
+            std::thread::spawn(move || {
+                std::thread::sleep(release.saturating_duration_since(std::time::Instant::now()));
+                writer.execute_batch("ROLLBACK").unwrap();
+            })
+        });
         let reply = self.inner.submit(order);
+        if let Some(holder) = holder {
+            holder.join().unwrap();
+        }
         if plan.exit_after_accept {
             std::process::exit(86);
         }
@@ -100,7 +114,12 @@ impl Probe {
     fn readable(&self) {
         if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
             let (done, read) = mpsc::channel();
-            std::thread::spawn(move || done.send(engine.paper_history(None, None).is_ok()));
+            std::thread::spawn(move || {
+                let read = engine.paper_history(None, None).is_ok();
+                // Release this clone before replying, so the test's last drop closes the workspace.
+                drop(engine);
+                done.send(read)
+            });
             assert_eq!(
                 read.recv_timeout(std::time::Duration::from_secs(5)),
                 Ok(true),
@@ -219,6 +238,32 @@ fn lost_reply_is_checked_then_reconciled_without_a_second_send() {
     assert_eq!(engine.paper_summary(run).unwrap().cash, "10736870000");
     assert_eq!(probe.sends(), 1);
     assert_eq!(count(&path, "SELECT count(*) FROM paper_venue_orders"), 1);
+}
+
+#[test]
+fn brief_write_lock_during_venue_record_still_confirms_the_purchase() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paper.sqlite");
+    let probe = Probe::default();
+    probe.plan(|p| p.hold_write_lock = true);
+    let engine = probe.open(&path);
+    let mut driver = Driver::start(&engine);
+    let run = driver.context.run_id;
+    driver.prepare();
+    driver.input(61000, Payload::Book(driver.book(10_000_000)));
+    assert_eq!(attempts(&path), [("full".into(), 10, 10)]);
+    assert_eq!(driver.summary.cash, "9736870000");
+    assert_eq!(driver.summary.reserved, "0");
+    assert_eq!(driver.summary.recovery, None);
+    driver.input(
+        901000,
+        Payload::Settlement(scenario(1).settlement_manifest.remove(0)),
+    );
+    assert_eq!(driver.summary.cash, "10736870000");
+    assert_eq!(engine.paper_summary(run).unwrap().control_state, "stopped");
+    let mut next = scenario(saved(&engine));
+    next.start_uuid = "00000000-0000-4000-8000-000000000002".into();
+    assert!(engine.paper_start(next).unwrap().context.is_some());
 }
 
 #[test]

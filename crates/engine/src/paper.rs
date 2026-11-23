@@ -18,8 +18,6 @@ pub fn simulation_depth(model: &str) -> &'static str {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaperError {
     Range,
-    InsufficientFunds,
-    Price,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,29 +78,6 @@ pub fn charge(quantity: u64, ask: Decimal) -> Result<Charge, PaperError> {
         fee: i64::try_from(debit - cost).map_err(|_| PaperError::Range)?,
         debit: i64::try_from(debit).map_err(|_| PaperError::Range)?,
     })
-}
-
-pub fn funded_charge(
-    settings: &Settings,
-    ask: Decimal,
-    cash: i64,
-    reserved: i64,
-) -> Result<Charge, PaperError> {
-    settings.validate()?;
-    if ask.millionths() < settings.minimum_price.millionths()
-        || ask.millionths() > settings.maximum_price.millionths()
-    {
-        return Err(PaperError::Price);
-    }
-    let charge = charge(settings.quantity, ask)?;
-    if reserved < 0
-        || cash
-            .checked_sub(reserved)
-            .is_none_or(|free| free < charge.debit)
-    {
-        return Err(PaperError::InsufficientFunds);
-    }
-    Ok(charge)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,8 +305,6 @@ impl From<PaperError> for Failure {
     fn from(error: PaperError) -> Self {
         Self::new(match error {
             PaperError::Range => "range",
-            PaperError::InsufficientFunds => "insufficient_funds",
-            PaperError::Price => "price",
         })
     }
 }
@@ -509,6 +482,18 @@ impl Owner {
         let include_bindings = matches!(&job, Job::Start(_) | Job::Context(_));
         let settlement_check = matches!(&job, Job::CheckSettlement(_));
         let mut created_context = false;
+        // Only the run this job addresses may be closed by its failure. Before a Go's run id is
+        // known it addresses only an open run with the same Go id; once the id is known, it
+        // addresses the run with that id, even if it is stopped, or the run it creates.
+        let mut target = match &job {
+            Job::Start(start) => self
+                .run
+                .as_ref()
+                .filter(|run| run.open && run.start.start_uuid == start.start_uuid)
+                .map(|run| run.id),
+            Job::Input(input) => Some(input.context.run_id),
+            Job::Control(id, _) | Job::Context(id) | Job::CheckSettlement(id) => Some(*id),
+        };
         let result = (|| {
             let (summary, context) = match job {
                 Job::Start(start) => {
@@ -539,6 +524,7 @@ impl Owner {
                         return Err(Failure::new("unsupported_input"));
                     }
                     let (id, existing) = recorder.paper_prepare_id(&start.start_uuid)?;
+                    target = Some(id);
                     let prepared = if existing {
                         None
                     } else {
@@ -683,22 +669,21 @@ impl Owner {
                 "checking_purchase",
             ]
             .contains(&error.code)
+            && let Some(run) = self.run.as_mut().filter(|run| Some(run.id) == target)
         {
             fence.lock().unwrap().paused = true;
-            if let Some(run) = self.run.as_mut() {
-                run.open = false;
-                if let Ok(mut recorder) = lock(store) {
-                    let _ = recorder.paper_control(
-                        run.id,
-                        if error.code == "storage" || error.code == "unconfirmed" {
-                            "unresolved"
-                        } else {
-                            "stopped"
-                        },
-                        true,
-                        Some(error.code),
-                    );
-                }
+            run.open = false;
+            if let Ok(mut recorder) = lock(store) {
+                let _ = recorder.paper_control(
+                    run.id,
+                    if error.code == "storage" || error.code == "unconfirmed" {
+                        "unresolved"
+                    } else {
+                        "stopped"
+                    },
+                    true,
+                    Some(error.code),
+                );
             }
         }
         result

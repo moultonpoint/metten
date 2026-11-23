@@ -114,7 +114,12 @@ impl Probe {
     fn readable(&self) {
         if let Some(engine) = self.engine.get().and_then(Weak::upgrade) {
             let (done, read) = mpsc::channel();
-            std::thread::spawn(move || done.send(engine.paper_history(None, None).is_ok()));
+            std::thread::spawn(move || {
+                let read = engine.paper_history(None, None).is_ok();
+                // Release this clone before replying, so the test's last drop closes the workspace.
+                drop(engine);
+                done.send(read)
+            });
             assert_eq!(
                 read.recv_timeout(std::time::Duration::from_secs(5)),
                 Ok(true),

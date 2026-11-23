@@ -350,6 +350,10 @@ oversized serialized clone. `SourceResponse` retains its response reservation
 through serialization. IDs, revisions, sequences and large counters stay strings.
 Inspection reads the real saved immutable version and derives validated source
 requirements; it never changes subscriptions or owns another rule representation.
+Source mutations and every provider-credential operation refuse `unavailable`
+before any side effect, including Disconnect's early revocation, unless this
+process opened the workspace: a second window refused the workspace lock (or any
+workspace that failed to open) cannot manage the shared credential item or sources.
 
 Workspace has one admitted mutation and one admitted read. `ProviderOwner` moves
 Coordinator and fixed credential ownership into blocking work and restores taken

@@ -271,7 +271,8 @@ pub fn dispatch(
             run_id,
             paper_market_id,
         } => {
-            json!({"kind":"market","run":engine.paper_summary(run_id)?,"receipt":engine.paper_market(run_id,paper_market_id)?,"assumptions":{"origin":"synthetic_controlled","simulation_model":SIMULATION_MODEL,"fee_model":FEE_MODEL,"depth":"one best ask; full fill or zero fill; no partial fills or retries","settlement":"identified synthetic binary outcome; no settlement fee"}})
+            let run = engine.paper_summary(run_id)?;
+            json!({"kind":"market","receipt":engine.paper_market(run_id,paper_market_id)?,"assumptions":{"origin":"synthetic_controlled","simulation_model":run.simulation_model,"fee_model":run.fee_model,"depth":simulation_depth(&run.simulation_model),"settlement":"identified synthetic binary outcome; no settlement fee"},"run":run})
         }
         Request::Evidence {
             run_id,
@@ -761,7 +762,9 @@ fn check(
         &mut state,
         json!({"operation":"market","run_id":run,"paper_market_id":market}),
     )?;
-    if receipt["receipt"]["settled_net"] != "736870000" {
+    if receipt["receipt"]["settled_net"] != "736870000"
+        || receipt["assumptions"]["simulation_model"] != SIMULATION_MODEL
+    {
         return Err(Failure::new("unconfirmed"));
     }
     let second = invoke(
@@ -777,22 +780,26 @@ fn check(
         cancel()?;
         state.advance_manual(at, &stopped)?;
     }
-    let zero = invoke(
+    // 101 requested against 100 available: one partial IOC, then no newer observation to retry.
+    let partial = invoke(
         engine.clone(),
         &mut state,
         json!({"operation":"history","run_id":second_run}),
     )?;
-    let rows = zero["page"]["markets"]
+    let rows = partial["page"]["markets"]
         .as_array()
         .ok_or_else(|| Failure::new("unconfirmed"))?;
     if rows.len() != 1
-        || rows[0]["attempt_state"] != "zero"
-        || rows[0]["filled_quantity"] != "0"
-        || rows[0]["fee"] != "0"
+        || rows[0]["attempt_state"] != "partial"
+        || rows[0]["attempt_count"] != "1"
+        || rows[0]["filled_quantity"] != "100"
+        || rows[0]["cost"] != "2500000000"
+        || rows[0]["fee"] != "131250000"
+        || rows[0]["settled_net"] != "7368750000"
         || rows[0]["paper_market_id"] == market
         || engine
             .paper_latest()?
-            .is_none_or(|r| r.cash != "10000000000")
+            .is_none_or(|r| r.cash != "17368750000")
     {
         return Err(Failure::new("unconfirmed"));
     }
@@ -801,7 +808,7 @@ fn check(
         .stop_and_save()
         .map_err(|_| Failure::new("storage"))?;
     Ok(
-        json!({"protocol":"metten-paper-check-v1","kind":"paper_check","origin":"synthetic_controlled","pending_debit":"263130000","settled_cash":"10736870000","settled_net":"736870000","zero_fill_quantity":"0","checks":["native_decode_dispatch","shared_learning_evaluator","finite_full_zero","exact_fee_settlement","numeric_identity_history","stopped_reopen","settlement_idempotency"]}),
+        json!({"protocol":"metten-paper-check-v1","kind":"paper_check","origin":"synthetic_controlled","pending_debit":"263130000","settled_cash":"10736870000","settled_net":"736870000","partial_fill_quantity":"100","checks":["native_decode_dispatch","shared_learning_evaluator","finite_full_partial","exact_fee_settlement","numeric_identity_history","stopped_reopen","settlement_idempotency"]}),
     )
 }
 
@@ -837,7 +844,7 @@ mod tests {
         let workspace = Workspace::new();
         let result = check(&workspace.0, &mut || Ok(())).unwrap();
         assert_eq!(result["settled_cash"], "10736870000");
-        assert_eq!(result["zero_fill_quantity"], "0");
+        assert_eq!(result["partial_fill_quantity"], "100");
     }
     #[test]
     fn headless_check_rejects_existing_and_symlink_workspaces_and_cancels_before_open() {

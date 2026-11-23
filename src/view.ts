@@ -70,8 +70,9 @@ export function paperFailure(failure: unknown): string {
 export function paperReason(reason: string): string {
   const messages: Record<string, string> = {
     prepared: 'Prepared for a future boundary; this market has not participated.',
-    confirmed_full_fill_pending_settlement: 'A full simulated fill is confirmed. The holding awaits its identified synthetic outcome.',
-    insufficient_quantity: 'The finite observed quantity could not fill the whole objective. A zero fill is confirmed; no fee was charged.',
+    confirmed_full_fill_pending_settlement: 'Simulated fills for the whole requested quantity are confirmed. The holding awaits its identified synthetic outcome.',
+    confirmed_partial_fill_pending_settlement: 'Part of the requested quantity is confirmed and locked to its side. Later attempts may only complete the unfilled remainder; the holding awaits its identified synthetic outcome.',
+    insufficient_quantity: 'No contracts filled from the finite observed quantity. A zero fill is confirmed; no fee was charged.',
     settled: 'The identified synthetic outcome is recorded and the account reconciles after fees.',
     canceled_before_dispatch: 'The proposal was canceled before dispatch. No purchase was confirmed.',
     insufficient_funds: 'The whole objective, including its fee, could not be funded. Quantity was not reduced.',
@@ -104,20 +105,24 @@ export function paperWitness(witness: PaperWitness): string {
 }
 export function paperReceipt(receipt: PaperReceipt) {
   const state = receipt.attempt_state;
-  const confirmed = state === 'full';
+  const confirmed = state === 'full' || state === 'partial';
   const terminal = confirmed || state === 'zero' || state === 'canceled';
-  const title = confirmed ? `Bought ${receipt.filled_quantity ?? '0'} ${(receipt.side ?? '').toUpperCase()} · ${receipt.settled_net === null ? 'pending settlement' : 'settled'}`
+  // Totals include only confirmed fills, so they stay true while a later attempt is unresolved.
+  const held = terminal || (receipt.filled_quantity ?? '0') !== '0';
+  const several = Number(receipt.attempt_count) > 1;
+  const title = confirmed ? `Bought ${receipt.filled_quantity ?? '0'}${state === 'partial' ? ' of ' + receipt.requested_quantity : ''} ${(receipt.side ?? '').toUpperCase()} · ${receipt.settled_net === null ? 'pending settlement' : 'settled'}`
     : state === 'zero' ? 'Attempted · zero contracts filled'
     : state === 'intent' || state === 'dispatched' || state === 'unknown' ? 'Purchase outcome unconfirmed'
     : state === 'canceled' ? 'Canceled before dispatch' : 'No confirmed purchase';
-  const facts: [string, string][] = [['Paper run', receipt.run_id], ['Saved strategy version', receipt.strategy_version_id], ['Market', receipt.source_market_id], ['Requested quantity', receipt.requested_quantity], ['Confirmed quantity', terminal ? receipt.filled_quantity ?? '0' : state === null ? 'No purchase' : 'Unconfirmed']];
+  const facts: [string, string][] = [['Paper run', receipt.run_id], ['Saved strategy version', receipt.strategy_version_id], ['Market', receipt.source_market_id], ['Requested quantity', receipt.requested_quantity], ['Confirmed quantity', held ? receipt.filled_quantity ?? '0' : state === null ? 'No purchase' : 'Unconfirmed']];
+  if (several) facts.push(['Attempts', receipt.attempt_count]);
   if (receipt.side !== null) facts.push(['Side', receipt.side.toUpperCase()]);
-  if (receipt.price !== null) facts.push(['Requested price per contract', paperMoney(receipt.price)]);
-  if (receipt.attempt_virtual_ms !== null) facts.push(['Attempt time', `${receipt.attempt_virtual_ms} ms on the synthetic clock`]);
-  if (receipt.available_millionths !== null) facts.push(['Observed available quantity', paperQuantity(receipt.available_millionths)]);
-  if (terminal && receipt.debit !== null) facts.push(['Confirmed total debit', paperMoney(receipt.debit)]);
-  if (terminal && receipt.cost !== null) facts.push(['Confirmed cost', paperMoney(receipt.cost)]);
-  if (terminal && receipt.fee !== null) facts.push(['Confirmed fee', paperMoney(receipt.fee)]);
+  if (receipt.price !== null) facts.push([several ? 'Latest attempt price per contract' : 'Requested price per contract', paperMoney(receipt.price)]);
+  if (receipt.attempt_virtual_ms !== null) facts.push([several ? 'Latest attempt time' : 'Attempt time', `${receipt.attempt_virtual_ms} ms on the synthetic clock`]);
+  if (receipt.available_millionths !== null) facts.push([several ? 'Latest attempt observed available quantity' : 'Observed available quantity', paperQuantity(receipt.available_millionths)]);
+  if (held && receipt.debit !== null) facts.push(['Confirmed total debit', paperMoney(receipt.debit)]);
+  if (held && receipt.cost !== null) facts.push(['Confirmed cost', paperMoney(receipt.cost)]);
+  if (held && receipt.fee !== null) facts.push(['Confirmed fee', paperMoney(receipt.fee)]);
   if (confirmed) facts.push(['Payout', receipt.payout === null ? 'Pending settlement' : paperMoney(receipt.payout)], ['Settled net', receipt.settled_net === null ? 'Pending settlement' : paperMoney(receipt.settled_net)]);
   const check = receipt.purchase_check;
   const block = check && ['price', 'insufficient_funds', 'purchases_paused', 'evidence_mismatch'].includes(receipt.reason)

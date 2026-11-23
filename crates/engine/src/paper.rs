@@ -3,7 +3,17 @@ use crate::strategy::Decimal;
 
 pub const DOLLAR: i64 = 100_000_000;
 pub const FEE_MODEL: &str = "controlled_general_taker_2026_07_07_m1";
-pub const SIMULATION_MODEL: &str = "controlled_best_ask_full_or_zero_v1";
+pub const SIMULATION_MODEL: &str = "controlled_best_ask_finite_ioc_v2";
+
+/// Depth assumption for a run's recorded simulation model; runs recorded before finite IOC
+/// retries keep their original model's description.
+pub fn simulation_depth(model: &str) -> &'static str {
+    if model == SIMULATION_MODEL {
+        "one finite best ask per observation; each IOC fills whole contracts up to that quantity and cancels the rest; retries need a newer observation and complete only the unfilled remainder"
+    } else {
+        "one best ask; full fill or zero fill; no partial fills or retries"
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaperError {
@@ -98,23 +108,35 @@ pub fn funded_charge(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fill {
     Full { quantity: u64, charge: Charge },
+    Partial { quantity: u64, charge: Charge },
     Zero { available_millionths: u64 },
 }
 
-/// The caller must first commit intent and bind the exact evaluated ask/book identity.
+/// One IOC against a finite book: fill whole contracts up to the available quantity; the
+/// exchange cancels the remainder. The caller must first commit intent and bind the exact
+/// evaluated ask/book identity, and must never dispatch twice against the same book.
 pub fn simulate(
     quantity: u64,
     ask: Decimal,
     available_millionths: u64,
 ) -> Result<Fill, PaperError> {
-    let charge = charge(quantity, ask)?;
-    if available_millionths < quantity.checked_mul(1_000_000).ok_or(PaperError::Range)? {
-        Ok(Fill::Zero {
+    let whole = charge(quantity, ask)?;
+    let filled = quantity.min(available_millionths / 1_000_000);
+    Ok(if filled == 0 {
+        Fill::Zero {
             available_millionths,
-        })
+        }
+    } else if filled == quantity {
+        Fill::Full {
+            quantity,
+            charge: whole,
+        }
     } else {
-        Ok(Fill::Full { quantity, charge })
-    }
+        Fill::Partial {
+            quantity: filled,
+            charge: charge(filled, ask)?,
+        }
+    })
 }
 
 pub fn payout(quantity: u64, won: bool) -> Result<i64, PaperError> {
@@ -372,7 +394,6 @@ struct Run {
     books: Vec<Book>,
     open: bool,
     current_market: Option<String>,
-    attempted: bool,
     participating: bool,
     last_value_transaction: u64,
     minimum_book_ms: u64,
@@ -667,7 +688,6 @@ impl Run {
             books: Vec::new(),
             open: true,
             current_market: None,
-            attempted: false,
             participating: false,
             last_value_transaction: 0,
             minimum_book_ms: 0,
@@ -805,34 +825,41 @@ impl Run {
                     self.open = false;
                 }
                 self.current_market = market;
-                self.attempted = false;
                 self.participating = false;
             }
-            let objective = self
-                .current_market
-                .as_ref()
-                .map(|market| strategy::ObjectiveView {
-                    market_id: market.clone(),
-                    requested_quantity: self.start.settings.quantity,
-                    confirmed_quantity: 0,
-                    locked_side: None,
-                    attempt_state: if self.attempted {
-                        strategy::AttemptState::Finished
-                    } else {
-                        strategy::AttemptState::None
-                    },
-                    safeguards: strategy::Safeguards {
-                        allowed: !self.attempted,
-                        yes: strategy::PriceRange {
-                            minimum: self.start.settings.minimum_price,
-                            maximum: self.start.settings.maximum_price,
+            // The durable record owns confirmed fills; the evaluator sees only this projection.
+            let objective = match &self.current_market {
+                None => None,
+                Some(market) => {
+                    let (confirmed, locked_side, attempted, unresolved) =
+                        recorder.paper_objective(self.id, market)?;
+                    Some(strategy::ObjectiveView {
+                        market_id: market.clone(),
+                        requested_quantity: self.start.settings.quantity,
+                        confirmed_quantity: confirmed,
+                        locked_side,
+                        attempt_state: if unresolved {
+                            strategy::AttemptState::Unknown
+                        } else if attempted {
+                            strategy::AttemptState::Finished
+                        } else {
+                            strategy::AttemptState::None
                         },
-                        no: strategy::PriceRange {
-                            minimum: self.start.settings.minimum_price,
-                            maximum: self.start.settings.maximum_price,
+                        safeguards: strategy::Safeguards {
+                            allowed: !unresolved && confirmed < self.start.settings.quantity,
+                            yes: strategy::PriceRange {
+                                minimum: self.start.settings.minimum_price,
+                                maximum: self.start.settings.maximum_price,
+                            },
+                            no: strategy::PriceRange {
+                                minimum: self.start.settings.minimum_price,
+                                maximum: self.start.settings.maximum_price,
+                            },
                         },
-                    },
-                });
+                    })
+                }
+            };
+            let purchasable = objective.as_ref().is_some_and(|o| o.safeguards.allowed);
             let decision = loop {
                 match self
                     .evaluator
@@ -879,7 +906,7 @@ impl Run {
                 )?;
             }
             if self.open
-                && !self.attempted
+                && purchasable
                 && fence.lock().unwrap().paused
                 && decision
                     .leaves
@@ -890,7 +917,7 @@ impl Run {
                 recorder.paper_market_progress(self.id, market, "purchases_paused", true)?;
             }
             if self.open
-                && !self.attempted
+                && purchasable
                 && let Some(candidate) = decision.candidate
             {
                 let descriptor = self
@@ -933,7 +960,8 @@ impl Run {
                                 )?
                             }
                             Err(error) => return Err(error),
-                            Ok(attempt) => {
+                            Ok(None) => {}
+                            Ok(Some(attempt)) => {
                                 let dispatch = {
                                     let f = fence.lock().unwrap();
                                     !f.paused && !f.quit && self.open
@@ -950,7 +978,6 @@ impl Run {
                                         at,
                                         Some(outcome),
                                     )?;
-                                    self.attempted = true;
                                 } else {
                                     recorder.paper_finish_attempt(self.id, attempt, at, None)?;
                                 }
@@ -1235,7 +1262,11 @@ pub struct MarketReceipt {
     pub purchase_check: Option<serde_json::Value>,
     pub more_evidence: bool,
     pub requested_quantity: String,
+    /// Objective-level: an unresolved attempt's state, else `full`/`partial` from confirmed
+    /// fills, else the latest attempt's terminal state. Amounts total all confirmed fills;
+    /// price, available quantity and time describe the latest attempt.
     pub attempt_state: Option<String>,
+    pub attempt_count: String,
     pub side: Option<String>,
     pub price: Option<String>,
     pub available_millionths: Option<String>,

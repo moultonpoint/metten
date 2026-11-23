@@ -565,8 +565,10 @@ pub(crate) struct PaperVenue {
 impl PaperVenue {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
         let connection = Connection::open(path).map_err(|e| e.to_string())?;
+        // Waits out a brief in-process write (such as a strategy save) instead of losing the
+        // order record, yet stays under the 5 s Quit deadline.
         connection
-            .busy_timeout(Duration::from_millis(250))
+            .busy_timeout(Duration::from_secs(2))
             .and_then(|()| {
                 connection.execute_batch("PRAGMA synchronous=FULL; PRAGMA fullfsync=ON;")
             })

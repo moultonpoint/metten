@@ -357,7 +357,7 @@ function renderPaper(snapshot: PaperSnapshot): boolean {
   if (prior?.run && !snapshot.run) return false;
   if (prior?.run && snapshot.run && (BigInt(snapshot.run.run_id) < BigInt(prior.run.run_id) || snapshot.run.run_id === prior.run.run_id && BigInt(snapshot.run.revision) < BigInt(prior.run.revision))) return false;
   if (prior && BigInt(snapshot.effective_generation) < BigInt(prior.effective_generation)) return false;
-  paperSnapshot = snapshot;
+  paperSnapshot = snapshot; paperUnavailable = false;
   const run = snapshot.run;
   if (run && run.run_id !== prior?.run?.run_id) element<HTMLDetailsElement>('paper-settings-details').open = false;
   if (run && paperStartRequest?.start_uuid === run.start_uuid) paperStartRequest = null;
@@ -429,7 +429,6 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
       if (!current()) return;
       if (response.kind !== 'snapshot') throw new Error('Unexpected paper response');
       if (!renderPaper(response)) return;
-      paperUnavailable = false;
       const run = response.run;
       const key = run ? `${run.run_id}:${run.history_revision}:${run.control_state}:${run.cash}` : 'empty';
       if (key !== paperHistoryKey) {

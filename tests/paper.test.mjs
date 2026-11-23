@@ -245,6 +245,17 @@ test('a purchase still unknown after restart stays paused and offers only the ex
   assert.match(Object.fromEntries(canceled.facts)['Purchase check'], /was never sent and was canceled/);
 });
 
+test('Check settlement is enabled as soon as a current snapshot is accepted, before history returns', async t => {
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ control_state: 'stopped', pending_holdings: true }));
+    if (args.operation === 'history') return new Promise(() => {});
+    throw new Error('Unexpected operation');
+  } });
+  await open(h);
+  assert.equal(h.element('paper-status').textContent, 'Stopped · purchases remain stopped');
+  assert.equal(h.element('paper-settle').disabled, false);
+});
+
 test('a history read failure keeps the current snapshot usable and its settlement check enabled', async t => {
   let historyReads = 0;
   const h = await harness(t, { paper(args) {

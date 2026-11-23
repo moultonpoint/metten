@@ -1,5 +1,4 @@
 //! Fixed native provider lifecycle, request policy and transport controls.
-#![allow(dead_code)] // Controlled source/evaluator interfaces are also exercised directly by owner tests.
 pub mod budget;
 mod coinbase;
 mod discovery;
@@ -14,8 +13,7 @@ pub mod transport;
 use source::SourceCommand;
 #[cfg(test)]
 use source::{SOURCE_STREAMS, ScheduleLoss, source_envelope};
-#[allow(unused_imports)] // Source view types remain available to controlled native callers.
-pub use source::{SourceHandle, SourceView, SourceWorker};
+pub use source::{SourceHandle, SourceWorker};
 mod wire;
 use std::sync::{
     Arc,
@@ -198,6 +196,7 @@ pub struct Fence {
     cause: Arc<std::sync::Mutex<Option<Failure>>>,
 }
 impl Fence {
+    #[cfg(test)]
     fn new() -> Self {
         Self::with_worker_stop(watch::channel(false).0)
     }
@@ -232,6 +231,7 @@ impl Fence {
                 .as_ref()
                 .is_none_or(|(parent, generation)| parent.current(*generation))
     }
+    #[cfg(test)]
     pub fn rejected(&self) -> u64 {
         self.rejected.load(Ordering::SeqCst)
     }
@@ -375,6 +375,7 @@ impl Coordinator {
         ));
         Ok(())
     }
+    #[cfg(test)]
     pub fn start_worker(
         &mut self,
         mut receiver: mpsc::Receiver<Intake>,
@@ -533,10 +534,6 @@ impl std::task::Wake for IntakeWake {
         self.notified.store(true, Ordering::Release);
         self.worker.unpark();
     }
-}
-#[cfg(test)]
-pub(super) fn intake_waker() -> std::task::Waker {
-    std::task::Waker::from(Arc::new(IntakeWake::default()))
 }
 pub(super) fn poll_intake(
     rx: &mut mpsc::Receiver<Intake>,

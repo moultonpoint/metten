@@ -244,3 +244,99 @@ test('a purchase still unknown after restart stays paused and offers only the ex
   const canceled = paperReceipt(receipt({ attempt_state: 'canceled', filled_quantity: '0', recovery: recovery({ state: 'canceled', requested_quantity: '10', confirmed_quantity: '0', interrupted: 'restart' }) }));
   assert.match(Object.fromEntries(canceled.facts)['Purchase check'], /was never sent and was canceled/);
 });
+
+test('Check settlement is enabled as soon as a current snapshot is accepted, before history returns', async t => {
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ control_state: 'stopped', pending_holdings: true }));
+    if (args.operation === 'history') return new Promise(() => {});
+    throw new Error('Unexpected operation');
+  } });
+  await open(h);
+  assert.equal(h.element('paper-status').textContent, 'Stopped · purchases remain stopped');
+  assert.equal(h.element('paper-settle').disabled, false);
+});
+
+test('a history read failure keeps the current snapshot usable and its settlement check enabled', async t => {
+  let historyReads = 0;
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ run_id: '3', control_state: 'stopped', pending_holdings: true }));
+    if (args.operation === 'history') { historyReads++; throw { code: 'storage', detail: 'private-marker' }; }
+    if (args.operation === 'check_settlement') return new Promise(() => {});
+    throw new Error('Unexpected operation');
+  } });
+  await open(h);
+  assert.equal(h.element('paper-status').textContent, 'Stopped · purchases remain stopped');
+  assert.match(h.element('paper-journal-error').textContent, /history could not be read/i);
+  assert.doesNotMatch(h.element('paper-journal-error').textContent, /private-marker/);
+  assert.equal(h.element('paper-settle').disabled, false);
+  h.timers.at(-1).callback(); await h.flush();
+  assert.equal(historyReads, 2, 'the same history key is retried on the next summary');
+  h.click('paper-settle'); await h.flush();
+  assert.equal(JSON.stringify(h.calls.filter(c => c.args?.operation === 'check_settlement').map(c => c.args)), JSON.stringify([{ operation: 'check_settlement', run_id: '3' }]));
+});
+
+test('a history read failure leaves the recording error visible and reports itself beside the journal', async t => {
+  let failing = true;
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ error_code: 'storage' }));
+    if (args.operation === 'history') { if (failing) throw { code: 'storage', detail: 'private-marker' }; return history([receipt()]); }
+    throw new Error('Unexpected operation');
+  } });
+  await open(h);
+  assert.match(h.element('paper-error').textContent, /Recording could not be confirmed. Purchases are fenced/);
+  assert.match(h.element('paper-journal-error').textContent, /history could not be read/i);
+  failing = false; h.timers.at(-1).callback(); await h.flush();
+  assert.equal(h.element('paper-journal-error').textContent, '');
+  assert.match(h.element('paper-error').textContent, /Recording could not be confirmed/);
+});
+
+test('repeated refreshes write each live region once per distinct message', async t => {
+  let failing = true, recording = 'storage';
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ error_code: recording }));
+    if (args.operation === 'history') { if (failing) throw { code: 'storage' }; return history([receipt()]); }
+    throw new Error('Unexpected operation');
+  } });
+  const writes = {};
+  for (const id of ['paper-error', 'paper-journal-error']) {
+    const region = h.element(id); let text = region.textContent; writes[id] = [];
+    Object.defineProperty(region, 'textContent', { get: () => text, set: value => { writes[id].push(value); text = value; } });
+  }
+  await open(h);
+  for (let i = 0; i < 3; i++) { h.timers.at(-1).callback(); await h.flush(); }
+  failing = false; recording = null;
+  for (let i = 0; i < 2; i++) { h.timers.at(-1).callback(); await h.flush(); }
+  assert.equal(writes['paper-error'].length, 2); assert.match(writes['paper-error'][0], /Recording could not be confirmed/); assert.equal(writes['paper-error'][1], '');
+  assert.equal(writes['paper-journal-error'].length, 2); assert.match(writes['paper-journal-error'][0], /history could not be read/i); assert.equal(writes['paper-journal-error'][1], '');
+});
+
+test('each failed More markets click is announced again, with a clear between them', async t => {
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run());
+    if (args.operation === 'history') { if (args.before_paper_market_id) throw { code: 'storage' }; return { kind: 'history', page: { markets: [receipt()], next_cursor: '2' } }; }
+    throw new Error('Unexpected operation');
+  } });
+  await open(h);
+  const region = h.element('paper-journal-error'); let text = region.textContent; const writes = [];
+  Object.defineProperty(region, 'textContent', { get: () => text, set: value => { writes.push(value); text = value; } });
+  for (let i = 0; i < 2; i++) { h.click('paper-more'); await h.flush(); }
+  assert.equal(writes.length, 3);
+  assert.match(writes[0], /More markets could not be read/); assert.equal(writes[1], ''); assert.equal(writes[2], writes[0]);
+});
+
+test('a failed More markets read keeps the previous page and reports itself beside the journal', async t => {
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ control_state: 'stopped', pending_holdings: true }));
+    if (args.operation === 'history') { if (args.before_paper_market_id) throw { code: 'storage', detail: 'private-marker' }; return { kind: 'history', page: { markets: [receipt()], next_cursor: '2' } }; }
+    throw new Error('Unexpected operation');
+  } });
+  await open(h);
+  h.click('paper-more'); await h.flush();
+  assert.match(h.element('paper-history').children[0].children[0].textContent, /KXBTC15M-PAPER-NEXT/);
+  assert.match(h.element('paper-journal-error').textContent, /More markets could not be read/);
+  assert.doesNotMatch(h.element('paper-journal-error').textContent, /private-marker/);
+  assert.equal(h.element('paper-error').textContent, '');
+  assert.equal(h.element('paper-status').textContent, 'Stopped · purchases remain stopped');
+  assert.equal(h.element('paper-settle').disabled, false);
+  assert.equal(h.element('paper-more').disabled, false);
+});

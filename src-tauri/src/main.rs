@@ -451,6 +451,10 @@ async fn sources(
         request,
         SourceRequest::Snapshot | SourceRequest::Details(_) | SourceRequest::Inspect(_)
     );
+    // Before any side effect, including the early Disconnect revocation below.
+    if !reading && !app.state::<Workspace>().source_allowed {
+        return Err(SourceFailure::new("unavailable"));
+    }
     #[cfg(target_os = "macos")]
     let requested_intent = if let SourceRequest::Connect(index) = &request {
         app.state::<Workspace>()
@@ -491,7 +495,6 @@ async fn sources(
         let _guard=guard;
         let workspace=app.state::<Workspace>();
         if workspace.quitting.load(Ordering::SeqCst){return Err(SourceFailure::new("quitting"))}
-        if !reading && !workspace.source_allowed {return Err(SourceFailure::new("unavailable"))}
         if let SourceRequest::Inspect(id)=request {
             let _inspection=admit_strategy(&workspace.strategy_operation,&workspace.quitting).map_err(|e|SourceFailure::new(e.code))?;
             let value=inspect_source_requirements(workspace.engine.as_ref().map_err(|_|SourceFailure::new("unavailable"))?,id)?;
@@ -842,7 +845,10 @@ fn begin_quit(app: &tauri::AppHandle) {
                 Err(providers::Failure::StillStopping)
             };
             let workspace = app.state::<Workspace>();
-            *workspace.providers.lock().expect("provider owner poisoned") = source;
+            // An operation that held the owner past the deadline restores it on drop; keep that.
+            if let Some(source) = source {
+                *workspace.providers.lock().expect("provider owner poisoned") = Some(source);
+            }
             if result.is_err() {
                 retain_quit_failure(
                     &app,
@@ -884,6 +890,11 @@ fn begin_quit(app: &tauri::AppHandle) {
         })
         .await;
     });
+}
+
+/// A process refused the workspace lock must not manage the shared credential item or sources.
+fn source_allowed(engine: &Result<std::sync::Arc<Engine>, String>, source_mode: bool) -> bool {
+    engine.is_ok() && (source_mode || std::env::var_os("METTEN_VERIFY_FD").is_none())
 }
 
 fn retain_quit_failure(app: &tauri::AppHandle, error: String) {
@@ -948,6 +959,7 @@ fn main() {
                 Engine::open(directory.join("session.sqlite"))
             })().map(std::sync::Arc::new);
             let source_mode = source_setup.is_some();
+            let source_allowed = source_allowed(&engine, source_mode);
             let (provider_store, channel) = if let Some((target,stream,session))=source_setup {
                 (provider_credential::native::Keychain::isolated(target),Some((stream,session)))
             }else{(provider_credential::native::Keychain::local(),None)};
@@ -955,7 +967,7 @@ fn main() {
             let revocation=coordinator.revocation();
             let paper = paper::NativePaper::default();
             let paper_stop = paper.stop_signal();
-            app.manage(Workspace { engine, #[cfg(target_os = "macos")] credentials: if source_mode { credential::Credentials::disabled() } else { credential::Credentials::setup() }, #[cfg(target_os = "macos")] providers: std::sync::Mutex::new(Some(coordinator)), #[cfg(target_os = "macos")] provider_credentials: std::sync::Mutex::new(Some(provider_credential::Credentials::new(provider_store))), source_handle: std::sync::Mutex::new(None), source_transport: std::sync::Arc::new((if source_mode {providers::transport::Transport::isolated()}else{providers::transport::Transport::new(providers::Environment::Production)}).map_err(|_| "Cannot prepare source transport")?), source_revocation: std::sync::Mutex::new(revocation), source_verifier: std::sync::Mutex::new(None), provider_operation: std::sync::Arc::new(StrategyAdmission::default()), source_read: std::sync::Arc::new(StrategyAdmission::default()), source_allowed: source_mode || std::env::var_os("METTEN_VERIFY_FD").is_none(), strategy_operation: std::sync::Arc::new(StrategyAdmission::default()), paper_operation: std::sync::Arc::new(StrategyAdmission::default()), paper_read: std::sync::Arc::new(StrategyAdmission::default()), paper:std::sync::Mutex::new(paper), paper_stop, quitting: AtomicBool::new(false), exit_ready: AtomicBool::new(false), quit_error: std::sync::Mutex::new(None) });
+            app.manage(Workspace { engine, #[cfg(target_os = "macos")] credentials: if source_mode { credential::Credentials::disabled() } else { credential::Credentials::setup() }, #[cfg(target_os = "macos")] providers: std::sync::Mutex::new(Some(coordinator)), #[cfg(target_os = "macos")] provider_credentials: std::sync::Mutex::new(Some(provider_credential::Credentials::new(provider_store))), source_handle: std::sync::Mutex::new(None), source_transport: std::sync::Arc::new((if source_mode {providers::transport::Transport::isolated()}else{providers::transport::Transport::new(providers::Environment::Production)}).map_err(|_| "Cannot prepare source transport")?), source_revocation: std::sync::Mutex::new(revocation), source_verifier: std::sync::Mutex::new(None), provider_operation: std::sync::Arc::new(StrategyAdmission::default()), source_read: std::sync::Arc::new(StrategyAdmission::default()), source_allowed, strategy_operation: std::sync::Arc::new(StrategyAdmission::default()), paper_operation: std::sync::Arc::new(StrategyAdmission::default()), paper_read: std::sync::Arc::new(StrategyAdmission::default()), paper:std::sync::Mutex::new(paper), paper_stop, quitting: AtomicBool::new(false), exit_ready: AtomicBool::new(false), quit_error: std::sync::Mutex::new(None) });
             {
                 let workspace = app.state::<Workspace>();
                 *workspace.source_revocation.lock().expect("source revocation poisoned") = workspace.providers.lock().expect("provider owner poisoned").as_ref().expect("source owner").revocation();
@@ -1177,6 +1189,35 @@ mod permissions_tests {
             .is_ok()
         );
     }
+    #[test]
+    fn a_process_refused_the_workspace_lock_cannot_manage_sources_or_credentials() {
+        let path = std::env::temp_dir().join(format!(
+            "metten-source-lock-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        let open = |source_mode| {
+            let engine =
+                metten_engine::Engine::open(path.join("session.sqlite")).map(std::sync::Arc::new);
+            let allowed = super::source_allowed(&engine, source_mode);
+            (engine, allowed)
+        };
+        let (first, allowed) = open(true);
+        assert!(first.is_ok() && allowed);
+        let (second, allowed) = open(true);
+        assert!(
+            second.is_err(),
+            "second process must be refused the workspace lock"
+        );
+        assert!(!allowed);
+        drop(first);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn source_inspection_reads_the_saved_validated_version_without_changing_it() {
         let path = std::env::temp_dir().join(format!(

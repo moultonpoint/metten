@@ -352,12 +352,14 @@ function paperControls() {
   element<HTMLButtonElement>('paper-evidence-more').disabled = paperReadBusy || paperEvidenceCursor === null;
   element('paper-go').textContent = paperStartRequest ? 'Retry the same Go request' : 'Go';
 }
+// Rewriting identical text would make a screen reader announce it again.
+function announce(id: string, text: string) { const region = element(id); if (region.textContent !== text) region.textContent = text; }
 function renderPaper(snapshot: PaperSnapshot): boolean {
   const prior = paperSnapshot;
   if (prior?.run && !snapshot.run) return false;
   if (prior?.run && snapshot.run && (BigInt(snapshot.run.run_id) < BigInt(prior.run.run_id) || snapshot.run.run_id === prior.run.run_id && BigInt(snapshot.run.revision) < BigInt(prior.run.revision))) return false;
   if (prior && BigInt(snapshot.effective_generation) < BigInt(prior.effective_generation)) return false;
-  paperSnapshot = snapshot;
+  paperSnapshot = snapshot; paperUnavailable = false;
   const run = snapshot.run;
   if (run && run.run_id !== prior?.run?.run_id) element<HTMLDetailsElement>('paper-settings-details').open = false;
   if (run && paperStartRequest?.start_uuid === run.start_uuid) paperStartRequest = null;
@@ -366,7 +368,7 @@ function renderPaper(snapshot: PaperSnapshot): boolean {
   element('paper-fixed').textContent = run ? `Run ${run.run_id} · Version ${run.strategy_version_id} · ${run.quantity} contracts per market · ${run.minimum_price}–${run.maximum_price}¢ · starting balance ${paperMoney(run.starting_balance)} · cash ${paperMoney(run.cash)} · reserved ${paperMoney(run.reserved)}\nSynthetic clock ${run.virtual_frontier_ms} ms · ${snapshot.stop_after_market ? 'Stop after market requested · ' : ''}${run.pending_ordinal === null ? 'Displayed accounting is committed.' : 'An input remains unconfirmed; inspect details.'}` : 'Choose a saved version and fixed settings. Go waits for an eligible full boundary.';
   element('paper-recovery').textContent = run?.recovery ? paperRecovery(run.recovery) : '';
   const errorCode = snapshot.playback_error ?? run?.error_code;
-  element('paper-error').textContent = errorCode ? paperFailure({ code: errorCode }) : paperRequestError;
+  announce('paper-error', errorCode ? paperFailure({ code: errorCode }) : paperRequestError);
   paperControls();
   return true;
 }
@@ -432,28 +434,35 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
       const run = response.run;
       const key = run ? `${run.run_id}:${run.history_revision}:${run.control_state}:${run.cash}` : 'empty';
       if (key !== paperHistoryKey) {
-        const history = await invoke<PaperResponse>('paper', { operation: 'history' });
-        if (!current()) return;
-        if (history.kind !== 'history') throw new Error('Unexpected paper history');
-        paperHistory = history.page.markets; paperCursor = history.page.next_cursor; paperHistoryKey = key;
-        const latestCurrent = paperHistory.find(m => m.run_id === run?.run_id);
-        if (!paperSelection && latestCurrent) paperSelection = { run_id: latestCurrent.run_id, paper_market_id: latestCurrent.paper_market_id };
-        renderPaperHistory();
-        const selected = paperHistory.find(r => r.run_id === paperSelection?.run_id && r.paper_market_id === paperSelection.paper_market_id);
-        if (selected) {
-          showPaperReceipt(selected);
-          ++paperSelectionGeneration; paperEvidenceCursor = null;
-          element('paper-detail').textContent = 'Receipt updated. Open details to read the current retained evidence.';
-          if (element<HTMLDetailsElement>('paper-details').open) paperWanted = 'detail';
+        try {
+          const history = await invoke<PaperResponse>('paper', { operation: 'history' });
+          if (!current()) return;
+          if (history.kind !== 'history') throw new Error('Unexpected paper history');
+          paperHistory = history.page.markets; paperCursor = history.page.next_cursor; paperHistoryKey = key; announce('paper-journal-error', '');
+          const latestCurrent = paperHistory.find(m => m.run_id === run?.run_id);
+          if (!paperSelection && latestCurrent) paperSelection = { run_id: latestCurrent.run_id, paper_market_id: latestCurrent.paper_market_id };
+          renderPaperHistory();
+          const selected = paperHistory.find(r => r.run_id === paperSelection?.run_id && r.paper_market_id === paperSelection.paper_market_id);
+          if (selected) {
+            showPaperReceipt(selected);
+            ++paperSelectionGeneration; paperEvidenceCursor = null;
+            element('paper-detail').textContent = 'Receipt updated. Open details to read the current retained evidence.';
+            if (element<HTMLDetailsElement>('paper-details').open) paperWanted = 'detail';
+          }
+        } catch {
+          // The accepted status stays usable; the unchanged key retries history on the next summary.
+          if (!current()) return;
+          announce('paper-journal-error', 'Paper history could not be read. Last confirmed history remains visible and is read again on the next refresh.');
         }
       }
-      paperUnavailable = false;
     }
     if (kind === 'more' && paperCursor !== null) {
+      // Only an explicit click reads more, so clear first: a repeated failure is announced again.
+      announce('paper-journal-error', '');
       const response = await invoke<PaperResponse>('paper', { operation: 'history', before_paper_market_id: paperCursor });
       if (!current()) return;
       if (response.kind !== 'history') throw new Error('Unexpected paper history');
-      paperHistory = response.page.markets; paperCursor = response.page.next_cursor; renderPaperHistory();
+      paperHistory = response.page.markets; paperCursor = response.page.next_cursor; announce('paper-journal-error', ''); renderPaperHistory();
     }
     if (kind === 'detail' && paperSelection) {
       const selection = { ...paperSelection }, generation = paperSelectionGeneration;
@@ -479,8 +488,9 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
     }
   } catch {
     if (!current() || (kind === 'detail' || kind === 'evidence_more') && selectedGeneration !== paperSelectionGeneration) return;
+    if (kind === 'more') { announce('paper-journal-error', 'More markets could not be read. This page remains visible; choose More markets to try again.'); return; }
     if (kind === 'summary') { paperUnavailable = true; element('paper-status').textContent = 'Paper status unavailable · Pause remains available'; }
-    element('paper-error').textContent = 'Paper state could not be read. Last confirmed history remains visible. Pause purchases and refresh status.';
+    announce('paper-error', 'Paper state could not be read. Last confirmed history remains visible. Pause purchases and refresh status.');
   } finally {
     paperReadBusy = false; paperControls();
     const desired = paperWanted; paperWanted = null;
@@ -495,7 +505,7 @@ async function paperAction(request: PaperRequest) {
   if (paperActionPending && request.operation !== 'pause') return;
   const generation = ++paperActionGeneration;
   const visibility = paperVisibilityGeneration;
-  paperActionPending = true; paperRequestError = ''; element('paper-error').textContent = '';
+  paperActionPending = true; paperRequestError = ''; announce('paper-error', '');
   element('paper-status').textContent = request.operation === 'start' ? 'Go requested · waiting for confirmation. A request is not a fill.' : `Requesting ${request.operation.replaceAll('_', ' ')}…`;
   paperControls();
   try {
@@ -513,7 +523,7 @@ async function paperAction(request: PaperRequest) {
     if (generation !== paperActionGeneration) return;
     ++paperResponseEpoch;
     if (request.operation === 'start' && failure && typeof failure === 'object' && 'code' in failure && ['range', 'invalid_request', 'unsupported_input', 'run_active'].includes(String(failure.code))) paperStartRequest = null;
-    if (visibility === paperVisibilityGeneration && paperPanel.open && !document.hidden) { paperRequestError = paperFailure(failure); element('paper-error').textContent = paperRequestError; }
+    if (visibility === paperVisibilityGeneration && paperPanel.open && !document.hidden) { paperRequestError = paperFailure(failure); announce('paper-error', paperRequestError); }
   } finally {
     if (generation === paperActionGeneration) { paperActionPending = false; paperHistoryKey = ''; paperControls(); requestPaperRead('summary'); }
   }

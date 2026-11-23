@@ -1159,9 +1159,12 @@ impl SourceView {
             "series_id":m.descriptor.series_id,"open_ms":m.descriptor.open_ms.to_string(),"close_ms":m.descriptor.close_ms.to_string(),
             "verified":m.verified && self.stream_current(Stream::Metadata),"preparation":if i128::from(now_ms) >= i128::from(m.descriptor.close_ms) {"expired"} else if !self.stream_current(Stream::Book) {"identified"} else {match m.preparation {Preparation::Unknown=>"unknown",Preparation::Identified=>"identified",Preparation::Collecting=>"collecting",Preparation::Ready=>"ready"}}})).collect();
         let current_market = self.snapshot.current_market.as_ref().filter(|id| {
+            // Same verification rule as the market rows; engine current-market meaning is unchanged.
             self.snapshot.markets.iter().any(|m| {
                 &m.descriptor.market_id == *id
                     && i128::from(now_ms) < i128::from(m.descriptor.close_ms)
+                    && m.verified
+                    && self.stream_current(Stream::Metadata)
             })
         });
         json!({"kind":"snapshot","owner":self.snapshot.owner.to_string(),"revision":self.snapshot.revision.to_string(),

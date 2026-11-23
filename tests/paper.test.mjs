@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { harness } from './ui-harness.mjs';
 import { paperMoney, paperQuantity, paperReceipt } from '../src/view.ts';
-const run = overrides => ({ pending_holdings: true, run_id: '1', start_uuid: '00000000-0000-4000-8000-000000000001', strategy_version_id: '1', revision: '1', history_revision: '1', control_state: 'active', cash: '9736870000', reserved: '0', virtual_frontier_ms: '61000', last_evaluated_through_ms: '61000', completed_ordinal: '8', pending_ordinal: null, error_code: null, quantity: '10', minimum_price: '15.123456', maximum_price: '90', starting_balance: '10000000000', fee_model: 'controlled_general_taker_2026_07_07_m1', simulation_model: 'controlled_best_ask_full_or_zero_v1', scenario_revision: 'controlled_learning_v1', go_utc_ms: '1795046400000', ...overrides });
+const run = overrides => ({ pending_holdings: true, run_id: '1', start_uuid: '00000000-0000-4000-8000-000000000001', strategy_version_id: '1', revision: '1', history_revision: '1', control_state: 'active', cash: '9736870000', reserved: '0', virtual_frontier_ms: '61000', last_evaluated_through_ms: '61000', completed_ordinal: '8', pending_ordinal: null, error_code: null, quantity: '10', minimum_price: '15.123456', maximum_price: '90', starting_balance: '10000000000', fee_model: 'controlled_general_taker_2026_07_07_m1', simulation_model: 'controlled_best_ask_finite_ioc_v2', scenario_revision: 'controlled_learning_v1', go_utc_ms: '1795046400000', ...overrides });
 const snapshot = (current, overrides = {}) => ({ kind: 'snapshot', run: current, effective_paused: false, effective_generation: '0', origin: 'synthetic_controlled', clock_multiplier: '20', ...overrides });
-const receipt = overrides => ({ run_id: '1', strategy_version_id: '1', paper_market_id: '2', source_market_id: 'KXBTC15M-PAPER-NEXT', source_contract_id: 'paper-next', series_id: 'btc15m', open_utc_ms: '1795046401000', close_utc_ms: '1795047301000', close_day: '20776', reason: 'confirmed_full_fill_pending_settlement', requested_quantity: '10', attempt_state: 'full', side: 'no', price: '25000000', available_millionths: '100000000', attempt_virtual_ms: '61000', filled_quantity: '10', cost: '250000000', fee: '13130000', debit: '263130000', payout: null, settled_net: null, winning_side: null, settlement_virtual_ms: null, settlement_recorded_at: null, ...overrides });
+const receipt = overrides => ({ run_id: '1', strategy_version_id: '1', paper_market_id: '2', source_market_id: 'KXBTC15M-PAPER-NEXT', source_contract_id: 'paper-next', series_id: 'btc15m', open_utc_ms: '1795046401000', close_utc_ms: '1795047301000', close_day: '20776', reason: 'confirmed_full_fill_pending_settlement', requested_quantity: '10', attempt_state: 'full', side: 'no', price: '25000000', available_millionths: '100000000', attempt_virtual_ms: '61000', attempt_count: '1', filled_quantity: '10', cost: '250000000', fee: '13130000', debit: '263130000', payout: null, settled_net: null, winning_side: null, settlement_virtual_ms: null, settlement_recorded_at: null, ...overrides });
 const history = rows => ({ kind: 'history', page: { markets: rows, next_cursor: null } });
 async function open(h) { h.element('paper-panel').open = true; h.element('paper-panel').handlers.toggle(); await h.flush(); }
 
@@ -22,6 +22,22 @@ test('paper formatting preserves fractional cents and unknown outcomes never ass
   assert.equal(unknown.facts.find(([label]) => label === 'Confirmed quantity')[1], 'Unconfirmed');
   assert.equal(unknown.facts.some(([label]) => label === 'Confirmed cost'), false);
   assert.equal(unknown.facts.some(([label]) => label === 'Confirmed total debit'), false);
+});
+
+test('partial and multi-attempt receipts show confirmed totals and label latest-attempt facts', () => {
+  const partial = paperReceipt(receipt({ attempt_state: 'partial', reason: 'confirmed_partial_fill_pending_settlement', attempt_count: '2', filled_quantity: '7', cost: '175000000', fee: '9190000', debit: '184190000' }));
+  assert.equal(partial.title, 'Bought 7 of 10 NO · pending settlement');
+  assert.match(partial.reason, /unfilled remainder/);
+  const facts = Object.fromEntries(partial.facts);
+  assert.equal(facts['Attempts'], '2');
+  assert.equal(facts['Latest attempt price per contract'], '$0.25');
+  assert.equal(facts['Confirmed fee'], '$0.0919');
+  assert.equal(facts['Payout'], 'Pending settlement');
+  // A later unresolved attempt never hides contracts already confirmed.
+  const later = Object.fromEntries(paperReceipt(receipt({ attempt_state: 'intent', attempt_count: '2', filled_quantity: '7', cost: '175000000', fee: '9190000', debit: '184190000' })).facts);
+  assert.equal(later['Confirmed quantity'], '7');
+  assert.equal(later['Confirmed cost'], '$1.75');
+  assert.equal(Object.hasOwn(Object.fromEntries(paperReceipt(receipt({ attempt_state: null, attempt_count: '0', price: null })).facts), 'Attempts'), false);
 });
 
 test('paper reads only while visible and settings reflect the immutable active run', async t => {

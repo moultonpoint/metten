@@ -49,13 +49,13 @@ def executable(app):
 
 def check_database(workspace):
     with sqlite3.connect(f"file:{workspace / 'session.sqlite'}?mode=ro", uri=True) as db:
-        if db.execute("PRAGMA user_version").fetchone() != (4,):
+        if db.execute("PRAGMA user_version").fetchone() != (5,):
             raise ValueError("Unexpected paper schema")
-        if db.execute("SELECT cash FROM paper_runs ORDER BY run_id").fetchall() != [(10736870000,), (10000000000,)]:
+        if db.execute("SELECT cash FROM paper_runs ORDER BY run_id").fetchall() != [(10736870000,), (17368750000,)]:
             raise ValueError("Paper cash did not reconcile")
-        if db.execute("SELECT payout,net FROM paper_settlements").fetchall() != [(1000000000, 736870000)]:
+        if db.execute("SELECT payout,net FROM paper_settlements ORDER BY settlement_id").fetchall() != [(1000000000, 736870000), (10000000000, 7368750000)]:
             raise ValueError("Paper settlement did not reconcile")
-        if db.execute("SELECT state,filled_quantity,cost,fee FROM paper_attempts ORDER BY attempt_id").fetchall() != [("full", 10, 250000000, 13130000), ("zero", 0, 0, 0)]:
+        if db.execute("SELECT state,filled_quantity,cost,fee FROM paper_attempts ORDER BY attempt_id").fetchall() != [("full", 10, 250000000, 13130000), ("partial", 100, 2500000000, 131250000)]:
             raise ValueError("Paper outcomes did not reconcile")
 
 

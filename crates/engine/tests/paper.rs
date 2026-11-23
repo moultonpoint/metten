@@ -1075,19 +1075,30 @@ fn failed_start_leaves_a_different_open_run_untouched() {
     };
     let run = driver.context.run_id;
     let before = engine.paper_summary(run).unwrap();
+    assert_eq!(before.error_code, None);
+    let effective = engine.paper_effective();
+    let original = format!("{:?}", driver.context);
+    let untouched = || {
+        assert_eq!(engine.paper_effective(), effective);
+        assert_eq!(
+            format!("{:?}", engine.paper_context(run).unwrap()),
+            original
+        );
+        assert_eq!(engine.paper_summary(run).unwrap(), before);
+    };
     let mut changed = first.clone();
     changed.settings.quantity = 9;
     assert_eq!(
         engine.paper_start(changed).unwrap_err().code,
         "input_conflict"
     );
+    untouched();
     let mut missing = first;
     missing.start_uuid = "00000000-0000-4000-8000-000000000003".into();
     missing.strategy_version_id = 999;
-    assert!(engine.paper_start(missing).is_err());
-    assert_eq!(engine.paper_summary(run).unwrap(), before);
-    assert_eq!(before.error_code, None);
-    driver.context = engine.paper_context(run).unwrap();
+    assert_eq!(engine.paper_start(missing).unwrap_err().code, "storage");
+    untouched();
+    // The run's original context still accepts input.
     driver.prepare();
     assert!(
         engine

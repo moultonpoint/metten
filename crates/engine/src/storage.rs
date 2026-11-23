@@ -565,8 +565,10 @@ pub(crate) struct PaperVenue {
 impl PaperVenue {
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
         let connection = Connection::open(path).map_err(|e| e.to_string())?;
+        // Waits out a brief in-process write (such as a strategy save) instead of losing the
+        // order record, yet stays under the 5 s Quit deadline.
         connection
-            .busy_timeout(Duration::from_millis(250))
+            .busy_timeout(Duration::from_secs(2))
             .and_then(|()| {
                 connection.execute_batch("PRAGMA synchronous=FULL; PRAGMA fullfsync=ON;")
             })
@@ -645,7 +647,7 @@ impl crate::paper::Venue for PaperVenue {
 
 impl Recorder {
     pub(crate) fn paper_validate_balances(&self) -> Result<(), crate::paper::Failure> {
-        let invalid: bool=self.connection.query_row("SELECT EXISTS(SELECT 1 FROM paper_runs r WHERE cash != starting_balance - coalesce((SELECT sum(cost+fee) FROM paper_attempts a WHERE a.run_id=r.run_id AND a.state IN ('full','partial')),0) + coalesce((SELECT sum(payout) FROM paper_settlements s WHERE s.run_id=r.run_id),0) OR reserved != coalesce((SELECT sum(reserved) FROM paper_attempts a WHERE a.run_id=r.run_id AND a.state IN ('intent','dispatched','unknown')),0)) OR EXISTS(SELECT 1 FROM paper_settlements s JOIN (SELECT run_id,paper_market_id,min(side) AS side,max(side) AS other_side,sum(filled_quantity) AS held,sum(cost) AS cost,sum(fee) AS fee FROM paper_attempts WHERE state IN ('full','partial') GROUP BY run_id,paper_market_id) a USING(run_id,paper_market_id) WHERE a.side!=a.other_side OR s.held_quantity!=a.held OR s.net!=s.payout-a.cost-a.fee OR s.payout!=CASE WHEN s.winning_side=a.side THEN a.held*100000000 ELSE 0 END)",[],|r|r.get(0)).map_err(paper_storage)?;
+        let invalid: bool=self.connection.query_row("SELECT EXISTS(SELECT 1 FROM paper_runs r WHERE cash != starting_balance - coalesce((SELECT sum(cost+fee) FROM paper_attempts a WHERE a.run_id=r.run_id AND a.state IN ('full','partial')),0) + coalesce((SELECT sum(payout) FROM paper_settlements s WHERE s.run_id=r.run_id),0) OR reserved != coalesce((SELECT sum(reserved) FROM paper_attempts a WHERE a.run_id=r.run_id AND a.state IN ('intent','dispatched','unknown')),0)) OR EXISTS(SELECT 1 FROM paper_settlements s LEFT JOIN (SELECT run_id,paper_market_id,min(side) AS side,max(side) AS other_side,sum(filled_quantity) AS held,sum(cost) AS cost,sum(fee) AS fee FROM paper_attempts WHERE state IN ('full','partial') GROUP BY run_id,paper_market_id) a USING(run_id,paper_market_id) WHERE a.held IS NULL OR a.side!=a.other_side OR s.held_quantity!=a.held OR s.net!=s.payout-a.cost-a.fee OR s.payout!=CASE WHEN s.winning_side=a.side THEN a.held*100000000 ELSE 0 END)",[],|r|r.get(0)).map_err(paper_storage)?;
         let foreign_key_failure = self
             .connection
             .prepare("PRAGMA foreign_key_check")
@@ -1548,6 +1550,20 @@ impl Recorder {
 mod paper_transaction_tests {
     use super::*;
     use crate::{paper::*, strategy::*};
+
+    #[test]
+    fn paper_venue_waits_longer_for_the_write_lock_than_the_recorder() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("paper.sqlite");
+        let (recorder, _) = Recorder::open(&path).unwrap();
+        let venue = PaperVenue::open(&path).unwrap();
+        let timeout = |c: &Connection| {
+            c.query_row("PRAGMA busy_timeout", [], |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        assert_eq!(timeout(&venue.connection), 2000);
+        assert_eq!(timeout(&recorder.connection), 250);
+    }
 
     #[test]
     fn terminal_outcome_and_settlement_are_idempotent_and_conflicts_preserve_money() {

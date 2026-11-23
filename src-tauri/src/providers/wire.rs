@@ -354,6 +354,7 @@ mod tests {
             ("1.234567e1", 12345670),
             ("0.68e5", 68000000000),
             ("0.5e1", 5000000),
+            ("0.05e1", 500000),
         ] {
             assert_eq!(
                 usd(decode::<&RawValue>(text.as_bytes()).unwrap())
@@ -362,7 +363,10 @@ mod tests {
                 want
             );
         }
-        assert!(usd(decode::<&RawValue>(b"0.1e-6").unwrap()).is_err());
+        // Precision is refused by the decoder itself, not by truncating to a zero price.
+        for text in ["0.1e-6", "0.10000001e1"] {
+            assert!(number(decode::<&RawValue>(text.as_bytes()).unwrap()).is_err());
+        }
         assert_eq!(
             cents(decode::<&RawValue>(br#""0.12345678""#).unwrap())
                 .unwrap()

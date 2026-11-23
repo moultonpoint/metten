@@ -18,10 +18,22 @@ fn exact_full_zero_and_settlement_economics() {
     assert_eq!(100 * DOLLAR - c.debit, 9_736_870_000);
     assert_eq!(payout(10, true).unwrap() - c.debit, 736_870_000);
     assert_eq!(payout(10, false).unwrap() - c.debit, -263_130_000);
+    // 9 × $0.25 = $2.25 plus 0.07 × 9 × 0.25 × 0.75 = $0.118125, rounded up to $2.3682.
     assert_eq!(
         simulate(10, price("25"), 9_999_999).unwrap(),
+        Fill::Partial {
+            quantity: 9,
+            charge: Charge {
+                cost: 225_000_000,
+                fee: 11_820_000,
+                debit: 236_820_000
+            }
+        }
+    );
+    assert_eq!(
+        simulate(10, price("25"), 999_999).unwrap(),
         Fill::Zero {
-            available_millionths: 9_999_999
+            available_millionths: 999_999
         }
     );
     assert_eq!(
@@ -31,6 +43,12 @@ fn exact_full_zero_and_settlement_economics() {
             charge: c
         }
     );
+}
+
+#[test]
+fn recorded_simulation_model_keeps_its_own_depth_description() {
+    assert!(simulation_depth(SIMULATION_MODEL).contains("cancels the rest"));
+    assert!(simulation_depth("controlled_best_ask_full_or_zero_v1").contains("no partial fills"));
 }
 
 #[test]
@@ -254,30 +272,158 @@ fn public_engine_stopped_reopen_settles_saved_manifest_without_source_replay() {
     );
 }
 
+fn attempts(path: &std::path::Path) -> Vec<(String, String, i64, i64, i64, i64)> {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.prepare("SELECT state,side,quantity,filled_quantity,cost,fee FROM paper_attempts ORDER BY attempt_id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+fn latest_receipt(driver: &Driver) -> MarketReceipt {
+    driver
+        .engine
+        .paper_history(Some(driver.context.run_id), None)
+        .unwrap()
+        .markets
+        .remove(0)
+}
+
 #[test]
-fn public_engine_finite_zero_fill_never_retries_the_objective() {
+fn public_engine_partial_fills_complete_only_the_original_locked_objective() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("paper.sqlite");
     let engine = Engine::open(&path).unwrap();
     let mut driver = Driver::start(&engine);
     driver.prepare();
-    driver.input(61000, Payload::Book(driver.book(9_999_999)));
+    let no = rules::Side::No;
+    // 4 of 10 fill: $1.00 cost, 0.07×4×0.25×0.75 = $0.0525 fee.
+    driver.input(61000, Payload::Book(driver.book(4_000_000)));
+    assert_eq!(driver.summary.cash, "9894750000");
+    assert_eq!(driver.summary.reserved, "0");
+    let receipt = latest_receipt(&driver);
+    assert_eq!(receipt.attempt_state.as_deref(), Some("partial"));
+    assert_eq!(receipt.filled_quantity.as_deref(), Some("4"));
+    assert_eq!(receipt.reason, "confirmed_partial_fill_pending_settlement");
+    // The same observation restated with more depth is unchanged data: no second IOC.
+    driver.input(
+        61500,
+        Payload::Book(driver.side_book(no, "25", 1, 61500, 100_000_000)),
+    );
+    driver.input(61600, Payload::Advance);
+    assert_eq!(attempts(&path).len(), 1);
+    // A new observation funds a retry of exactly the 6 unfilled contracts; 3 fill.
+    driver.observe(62000, 2, "80", "25");
+    driver.input(
+        62000,
+        Payload::Book(driver.side_book(no, "25", 2, 62000, 3_500_000)),
+    );
+    // Only YES qualifies now; the side is locked to NO after a fill, so nothing is sent.
+    driver.observe(63000, 3, "20", "35");
+    driver.input(
+        63000,
+        Payload::Book(driver.side_book(rules::Side::Yes, "20", 3, 63000, 100_000_000)),
+    );
+    // NO qualifies again; the retry asks for the remaining 3 and completes the objective.
+    driver.observe(64000, 4, "80", "25");
+    driver.input(
+        64000,
+        Payload::Book(driver.side_book(no, "25", 4, 64000, 100_000_000)),
+    );
+    // Complete: later eligible liquidity never becomes a second objective.
+    driver.observe(65000, 5, "80", "25");
+    driver.input(
+        65000,
+        Payload::Book(driver.side_book(no, "25", 5, 65000, 100_000_000)),
+    );
+    assert_eq!(
+        attempts(&path),
+        vec![
+            ("partial".into(), "no".into(), 10, 4, 100_000_000, 5_250_000),
+            ("partial".into(), "no".into(), 6, 3, 75_000_000, 3_940_000),
+            ("full".into(), "no".into(), 3, 3, 75_000_000, 3_940_000),
+        ]
+    );
+    assert_eq!(driver.summary.cash, "9736870000");
+    let receipt = latest_receipt(&driver);
+    assert_eq!(receipt.attempt_state.as_deref(), Some("full"));
+    assert_eq!(receipt.attempt_count, "3");
+    assert_eq!(receipt.side.as_deref(), Some("no"));
+    assert_eq!(receipt.filled_quantity.as_deref(), Some("10"));
+    assert_eq!(receipt.cost.as_deref(), Some("250000000"));
+    assert_eq!(receipt.fee.as_deref(), Some("13130000"));
+    assert_eq!(receipt.debit.as_deref(), Some("263130000"));
+    let entry = scenario(1).settlement_manifest.remove(0);
+    driver.input(901000, Payload::Settlement(entry));
+    // NO wins: 10 × $1 payout on the combined holding.
+    assert_eq!(driver.summary.cash, "10736870000");
+    assert_eq!(
+        latest_receipt(&driver).settled_net.as_deref(),
+        Some("736870000")
+    );
+    drop(engine);
+    // Reopen reconciles cash, reservations and the combined settlement.
+    let engine = Engine::open(&path).unwrap();
+    assert_eq!(engine.paper_latest().unwrap().unwrap().cash, "10736870000");
+}
+
+#[test]
+fn public_engine_zero_fills_are_terminal_and_retries_end_with_eligibility() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("paper.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    let mut driver = Driver::start(&engine);
+    driver.prepare();
+    let yes = rules::Side::Yes;
+    // Under one contract available: a confirmed zero fill, no fee.
+    driver.input(61000, Payload::Book(driver.book(999_999)));
+    // Restating that unchanged observation with depth never grants new liquidity.
     driver.input(62000, Payload::Book(driver.book(100_000_000)));
     assert_eq!(driver.summary.cash, "10000000000");
-    let db = rusqlite::Connection::open(&path).unwrap();
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*),sum(filled_quantity),sum(fee) FROM paper_attempts",
-            [],
-            |r| Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?
-            ))
-        )
-        .unwrap(),
-        (1, 0, 0)
+    assert_eq!(latest_receipt(&driver).reason, "insufficient_quantity");
+    // Before any fill the side may change once the prior attempt has finished.
+    driver.observe(63000, 2, "20", "35");
+    driver.input(
+        63000,
+        Payload::Book(driver.side_book(yes, "20", 2, 63000, 0)),
     );
+    driver.observe(64000, 3, "20", "35");
+    // 5 × $0.20 = $1.00 plus 0.07 × 5 × 0.20 × 0.80 = $0.056 fee.
+    driver.input(
+        64000,
+        Payload::Book(driver.side_book(yes, "20", 3, 64000, 5_000_000)),
+    );
+    assert_eq!(driver.summary.cash, "9894400000");
+    // After the purchase window ends, eligible-looking liquidity is never used.
+    driver.observe(125000, 4, "20", "25");
+    driver.input(
+        125000,
+        Payload::Book(driver.side_book(yes, "20", 4, 125000, 100_000_000)),
+    );
+    assert_eq!(
+        attempts(&path),
+        vec![
+            ("zero".into(), "no".into(), 10, 0, 0, 0),
+            ("zero".into(), "yes".into(), 10, 0, 0, 0),
+            (
+                "partial".into(),
+                "yes".into(),
+                10,
+                5,
+                100_000_000,
+                5_600_000
+            ),
+        ]
+    );
+    // The purchased contracts are retained through settlement; NO wins, so YES pays nothing.
+    let entry = scenario(1).settlement_manifest.remove(0);
+    driver.input(901000, Payload::Settlement(entry));
+    let receipt = latest_receipt(&driver);
+    assert_eq!(receipt.attempt_state.as_deref(), Some("partial"));
+    assert_eq!(receipt.filled_quantity.as_deref(), Some("5"));
+    assert_eq!(receipt.settled_net.as_deref(), Some("-105600000"));
+    assert_eq!(driver.summary.cash, "9894400000");
 }
 
 #[test]

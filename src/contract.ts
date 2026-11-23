@@ -45,7 +45,7 @@ export interface PaperWitness {
 export interface PaperReceipt {
   run_id: string; strategy_version_id: string; paper_market_id: string; source_market_id: string; source_contract_id: string; series_id: string;
   open_utc_ms: string; close_utc_ms: string; close_day: string; reason: string; primary_witness: PaperWitness | null; purchase_check: { evaluated_at_ms: string; offered_price: string | null; minimum_price: string; maximum_price: string; available_funds: string; required_debit: string | null } | null; more_evidence: boolean; requested_quantity: string;
-  attempt_state: 'intent' | 'dispatched' | 'full' | 'zero' | 'canceled' | 'unknown' | null;
+  attempt_state: 'intent' | 'dispatched' | 'full' | 'partial' | 'zero' | 'canceled' | 'unknown' | null; attempt_count: string;
   side: string | null; price: string | null; available_millionths: string | null; attempt_virtual_ms: string | null;
   filled_quantity: string | null; cost: string | null; fee: string | null; debit: string | null; payout: string | null;
   settled_net: string | null; winning_side: string | null; settlement_virtual_ms: string | null; settlement_recorded_at: string | null;

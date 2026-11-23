@@ -180,6 +180,57 @@ impl<'a> Driver<'a> {
         );
         self.update(61000, false);
     }
+    /// A new observation of both next-market asks.
+    #[allow(dead_code)] // Used by tests/paper.rs; lib.rs also includes this fixture.
+    pub(super) fn observe(&mut self, at: u64, number: u64, yes: &str, no: &str) {
+        let updates = [(3, rules::Side::Yes, yes), (4, rules::Side::No, no)]
+            .map(|(id, side, value)| src::BindingUpdate {
+                binding: rules::BindingDescriptor {
+                    binding_id: id,
+                    input_id: "selected_side_ask".into(),
+                    scope: rules::BindingScope::Contract {
+                        market_id: "KXBTC15M-PAPER-NEXT".into(),
+                        contract_id: "paper-next".into(),
+                        side,
+                    },
+                },
+                unit: rules::RuleUnit::ContractCents,
+                value: Some(src::ValueUpdate::Observation {
+                    number,
+                    value: price(value),
+                }),
+                valid_until_ms: Some(1000000),
+            })
+            .to_vec();
+        self.source(
+            at,
+            src::SourceEvent::Update {
+                stream: src::Stream::Book,
+                token: self.context.book_token,
+                updates,
+                coverage: vec![],
+            },
+        );
+    }
+    /// A finite book bound to the latest observation of one next-market side.
+    #[allow(dead_code)] // Used by tests/paper.rs; lib.rs also includes this fixture.
+    pub(super) fn side_book(
+        &self,
+        side: rules::Side,
+        ask: &str,
+        number: u64,
+        at: u64,
+        quantity: u64,
+    ) -> Book {
+        Book {
+            side,
+            binding_id: if side == rules::Side::Yes { 3 } else { 4 },
+            ask: price(ask),
+            observation_number: number,
+            accepted_ms: at,
+            ..self.book(quantity)
+        }
+    }
     pub(super) fn book(&self, quantity: u64) -> Book {
         Book {
             source_market_id: "KXBTC15M-PAPER-NEXT".into(),

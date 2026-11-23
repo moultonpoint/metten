@@ -509,6 +509,12 @@ impl Owner {
         let include_bindings = matches!(&job, Job::Start(_) | Job::Context(_));
         let settlement_check = matches!(&job, Job::CheckSettlement(_));
         let mut created_context = false;
+        // Only the run this job addresses may be closed by its failure; Start learns its id below.
+        let mut target = match &job {
+            Job::Start(_) => None,
+            Job::Input(input) => Some(input.context.run_id),
+            Job::Control(id, _) | Job::Context(id) | Job::CheckSettlement(id) => Some(*id),
+        };
         let result = (|| {
             let (summary, context) = match job {
                 Job::Start(start) => {
@@ -539,6 +545,7 @@ impl Owner {
                         return Err(Failure::new("unsupported_input"));
                     }
                     let (id, existing) = recorder.paper_prepare_id(&start.start_uuid)?;
+                    target = Some(id);
                     let prepared = if existing {
                         None
                     } else {
@@ -683,22 +690,21 @@ impl Owner {
                 "checking_purchase",
             ]
             .contains(&error.code)
+            && let Some(run) = self.run.as_mut().filter(|run| Some(run.id) == target)
         {
             fence.lock().unwrap().paused = true;
-            if let Some(run) = self.run.as_mut() {
-                run.open = false;
-                if let Ok(mut recorder) = lock(store) {
-                    let _ = recorder.paper_control(
-                        run.id,
-                        if error.code == "storage" || error.code == "unconfirmed" {
-                            "unresolved"
-                        } else {
-                            "stopped"
-                        },
-                        true,
-                        Some(error.code),
-                    );
-                }
+            run.open = false;
+            if let Ok(mut recorder) = lock(store) {
+                let _ = recorder.paper_control(
+                    run.id,
+                    if error.code == "storage" || error.code == "unconfirmed" {
+                        "unresolved"
+                    } else {
+                        "stopped"
+                    },
+                    true,
+                    Some(error.code),
+                );
             }
         }
         result

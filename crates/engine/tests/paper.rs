@@ -1048,6 +1048,57 @@ fn historical_start_retry_does_not_replace_current_run_or_control_target() {
 }
 
 #[test]
+fn failed_start_leaves_a_different_open_run_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+    let first = scenario(saved(&engine));
+    let one = engine.paper_start(first.clone()).unwrap();
+    engine
+        .paper_control(one.context.unwrap().run_id, Control::StopAfterMarket)
+        .unwrap();
+    let mut second = first.clone();
+    second.start_uuid = "00000000-0000-4000-8000-000000000002".into();
+    let two = engine.paper_start(second.clone()).unwrap();
+    let mut driver = Driver {
+        engine: &engine,
+        context: two.context.unwrap(),
+        ordinal: 0,
+        summary: two.summary,
+    };
+    let run = driver.context.run_id;
+    let before = engine.paper_summary(run).unwrap();
+    let mut changed = first.clone();
+    changed.settings.quantity = 9;
+    assert_eq!(
+        engine.paper_start(changed).unwrap_err().code,
+        "input_conflict"
+    );
+    let mut missing = first;
+    missing.start_uuid = "00000000-0000-4000-8000-000000000003".into();
+    missing.strategy_version_id = 999;
+    assert!(engine.paper_start(missing).is_err());
+    assert_eq!(engine.paper_summary(run).unwrap(), before);
+    assert_eq!(before.error_code, None);
+    driver.context = engine.paper_context(run).unwrap();
+    driver.prepare();
+    assert!(
+        engine
+            .paper_control(run, Control::Pause)
+            .unwrap()
+            .effective_paused
+    );
+    // A conflict against the open run's own Go id still stops that run.
+    second.settings.quantity = 9;
+    assert_eq!(
+        engine.paper_start(second).unwrap_err().code,
+        "input_conflict"
+    );
+    let stopped = engine.paper_summary(run).unwrap();
+    assert_eq!(stopped.control_state, "stopped");
+    assert_eq!(stopped.error_code.as_deref(), Some("input_conflict"));
+}
+
+#[test]
 fn invalid_source_clock_is_rejected_before_pending_receipt_and_can_be_corrected() {
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();

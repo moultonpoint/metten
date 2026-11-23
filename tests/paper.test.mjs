@@ -310,6 +310,20 @@ test('repeated refreshes write each live region once per distinct message', asyn
   assert.equal(writes['paper-journal-error'].length, 2); assert.match(writes['paper-journal-error'][0], /history could not be read/i); assert.equal(writes['paper-journal-error'][1], '');
 });
 
+test('each failed More markets click is announced again, with a clear between them', async t => {
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run());
+    if (args.operation === 'history') { if (args.before_paper_market_id) throw { code: 'storage' }; return { kind: 'history', page: { markets: [receipt()], next_cursor: '2' } }; }
+    throw new Error('Unexpected operation');
+  } });
+  await open(h);
+  const region = h.element('paper-journal-error'); let text = region.textContent; const writes = [];
+  Object.defineProperty(region, 'textContent', { get: () => text, set: value => { writes.push(value); text = value; } });
+  for (let i = 0; i < 2; i++) { h.click('paper-more'); await h.flush(); }
+  assert.equal(writes.length, 3);
+  assert.match(writes[0], /More markets could not be read/); assert.equal(writes[1], ''); assert.equal(writes[2], writes[0]);
+});
+
 test('a failed More markets read keeps the previous page and reports itself beside the journal', async t => {
   const h = await harness(t, { paper(args) {
     if (args.operation === 'snapshot') return snapshot(run({ control_state: 'stopped', pending_holdings: true }));

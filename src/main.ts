@@ -457,6 +457,8 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
       }
     }
     if (kind === 'more' && paperCursor !== null) {
+      // Only an explicit click reads more, so clear first: a repeated failure is announced again.
+      announce('paper-journal-error', '');
       const response = await invoke<PaperResponse>('paper', { operation: 'history', before_paper_market_id: paperCursor });
       if (!current()) return;
       if (response.kind !== 'history') throw new Error('Unexpected paper history');

@@ -482,8 +482,8 @@ impl Owner {
         let include_bindings = matches!(&job, Job::Start(_) | Job::Context(_));
         let settlement_check = matches!(&job, Job::CheckSettlement(_));
         let mut created_context = false;
-        // Only the run this job addresses may be closed by its failure; a Go addresses an open
-        // run with the same Go id, or the run it creates.
+        // Only the run this job addresses may be closed by its failure. Before a Go's run id is
+        // known it addresses only an open run with the same Go id; once known, that run or the one it creates.
         let mut target = match &job {
             Job::Start(start) => self
                 .run

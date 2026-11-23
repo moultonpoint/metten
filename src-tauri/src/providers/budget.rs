@@ -206,6 +206,8 @@ impl Retry {
     pub fn slow(&self) -> bool {
         self.failures >= 5
     }
+    // Test-only: production never calls this reset yet, so slow retry lasts until restart (#77).
+    #[cfg(test)]
     pub fn usable(&mut self, now: Instant) {
         let since = *self.usable_since.get_or_insert(now);
         if now.saturating_duration_since(since) >= Duration::from_secs(30) {

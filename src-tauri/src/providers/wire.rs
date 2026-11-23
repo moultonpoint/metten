@@ -106,14 +106,23 @@ pub fn number(raw: &RawValue) -> Result<Decimal, Failure> {
         let mantissa = mantissa.strip_prefix('-').unwrap_or(mantissa);
         let point = mantissa.find('.').unwrap_or(mantissa.len()) as i32 + exponent;
         let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+        // The strict decimal grammar refuses leading zeros, so 0.68e5 must become 68000.
+        let whole = |part: &str| match part.trim_start_matches('0') {
+            "" => "0".to_owned(),
+            part => part.to_owned(),
+        };
         let expanded = if point <= 0 {
             format!("0.{}{}", "0".repeat((-point) as usize), digits)
         } else if point as usize >= digits.len() {
-            format!("{}{}", digits, "0".repeat(point as usize - digits.len()))
+            whole(&format!(
+                "{}{}",
+                digits,
+                "0".repeat(point as usize - digits.len())
+            ))
         } else {
             format!(
                 "{}.{}",
-                &digits[..point as usize],
+                whole(&digits[..point as usize]),
                 &digits[point as usize..]
             )
         };
@@ -343,6 +352,9 @@ mod tests {
             ("6.800012e4", 68000120000),
             ("1e-6", 1),
             ("1.234567e1", 12345670),
+            ("0.68e5", 68000000000),
+            ("0.5e1", 5000000),
+            ("0.05e1", 500000),
         ] {
             assert_eq!(
                 usd(decode::<&RawValue>(text.as_bytes()).unwrap())
@@ -350,6 +362,10 @@ mod tests {
                     .millionths(),
                 want
             );
+        }
+        // Precision is refused by the decoder itself, not by truncating to a zero price.
+        for text in ["0.1e-6", "0.10000001e1"] {
+            assert!(number(decode::<&RawValue>(text.as_bytes()).unwrap()).is_err());
         }
         assert_eq!(
             cents(decode::<&RawValue>(br#""0.12345678""#).unwrap())

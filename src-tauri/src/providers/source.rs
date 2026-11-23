@@ -108,6 +108,7 @@ impl SourceWorker {
             lease: None,
         })
     }
+    #[cfg(test)]
     pub fn tokens(&self) -> [metten_engine::sources::StreamToken; 6] {
         SOURCE_STREAMS.map(|s| self.state.token(s))
     }
@@ -918,9 +919,6 @@ impl SourceHandle {
     pub fn enabled(&self) -> [bool; 4] {
         self.desired.borrow().enabled
     }
-    pub fn memory(&self) -> &memory::Memory {
-        &self.memory
-    }
     pub fn elapsed_ms(&self) -> u64 {
         u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
@@ -1159,9 +1157,12 @@ impl SourceView {
             "series_id":m.descriptor.series_id,"open_ms":m.descriptor.open_ms.to_string(),"close_ms":m.descriptor.close_ms.to_string(),
             "verified":m.verified && self.stream_current(Stream::Metadata),"preparation":if i128::from(now_ms) >= i128::from(m.descriptor.close_ms) {"expired"} else if !self.stream_current(Stream::Book) {"identified"} else {match m.preparation {Preparation::Unknown=>"unknown",Preparation::Identified=>"identified",Preparation::Collecting=>"collecting",Preparation::Ready=>"ready"}}})).collect();
         let current_market = self.snapshot.current_market.as_ref().filter(|id| {
+            // Same verification rule as the market rows; engine current-market meaning is unchanged.
             self.snapshot.markets.iter().any(|m| {
                 &m.descriptor.market_id == *id
                     && i128::from(now_ms) < i128::from(m.descriptor.close_ms)
+                    && m.verified
+                    && self.stream_current(Stream::Metadata)
             })
         });
         json!({"kind":"snapshot","owner":self.snapshot.owner.to_string(),"revision":self.snapshot.revision.to_string(),
@@ -1567,6 +1568,7 @@ pub struct SourceHandle {
     fixtures: [watch::Sender<Option<Fence>>; 3],
     epoch: Instant,
     memory: memory::Memory,
+    #[cfg(test)]
     pub(super) schedule: watch::Sender<Option<ScheduleLoss>>,
     controls: [ControlSlot; 3],
     outbound: [mpsc::Sender<Control>; 3],
@@ -1584,6 +1586,7 @@ impl Coordinator {
         let base_charge = source._base_charge.clone();
         let memory = source.memory.clone();
         let epoch = source.epoch;
+        #[cfg(test)]
         let schedule = source.schedule.clone();
         let channels: [_; 3] = std::array::from_fn(|_| mpsc::channel(7));
         let mut receivers: [ControlSlot; 3] =
@@ -1782,6 +1785,7 @@ impl Coordinator {
             latest,
             memory,
             epoch,
+            #[cfg(test)]
             schedule,
             command,
             controls: receivers,
@@ -2454,6 +2458,7 @@ impl SourceWorker {
         source.enabled = [false; 4];
         Ok(source)
     }
+    #[cfg(test)]
     pub fn prepare(
         strategy: &metten_engine::strategy::ValidatedStrategy,
         markets: &[metten_engine::strategy::MarketDescriptor],

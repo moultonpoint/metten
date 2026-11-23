@@ -1,5 +1,4 @@
 //! Fixed protected records. No arbitrary secret read or native command.
-#![allow(dead_code)] // Controlled store/signing seams are exercised by native owner tests.
 use crate::providers::{Environment, Failure, signing::Key};
 use serde::{Deserialize, Serialize};
 const RECORD_BYTES: usize = 20 * 1024;

@@ -312,7 +312,20 @@ fn public_engine_partial_fills_complete_only_the_original_locked_objective() {
         Payload::Book(driver.side_book(no, "25", 1, 61500, 100_000_000)),
     );
     driver.input(61600, Payload::Advance);
+    // Re-initializing the same ask changes the value transaction, not the observation.
+    let spent = driver.context.last_value_transaction;
+    driver.reinitialize(61700, "80", "25");
+    assert_ne!(driver.context.last_value_transaction, spent);
+    driver.input(
+        61700,
+        Payload::Book(driver.side_book(no, "25", 1, 61700, 100_000_000)),
+    );
     assert_eq!(attempts(&path).len(), 1);
+    // The retained check prices the 6-contract remainder: $1.50 + $0.07875 → $1.5788.
+    assert_eq!(
+        latest_receipt(&driver).purchase_check.unwrap()["required_debit"],
+        "157880000"
+    );
     // A new observation funds a retry of exactly the 6 unfilled contracts; 3 fill.
     driver.observe(62000, 2, "80", "25");
     driver.input(
@@ -366,6 +379,58 @@ fn public_engine_partial_fills_complete_only_the_original_locked_objective() {
     // Reopen reconciles cash, reservations and the combined settlement.
     let engine = Engine::open(&path).unwrap();
     assert_eq!(engine.paper_latest().unwrap().unwrap().cash, "10736870000");
+}
+
+#[test]
+fn public_engine_reconnect_never_regrants_a_spent_book() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("paper.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    let mut driver = Driver::start(&engine);
+    driver.prepare();
+    driver.input(61000, Payload::Book(driver.book(4_000_000)));
+    let generation = driver.context.generation;
+    for (at, state) in [
+        (61100, src::Connection::Disconnected),
+        (61200, src::Connection::Open),
+    ] {
+        driver.source(
+            at,
+            src::SourceEvent::Connection {
+                provider: src::Provider::Kalshi,
+                token: driver.context.book_token,
+                state,
+            },
+        );
+    }
+    driver.source(
+        61200,
+        src::SourceEvent::Metadata {
+            token: driver.context.metadata_token,
+            market_id: "KXBTC15M-PAPER-NEXT".into(),
+            verified: true,
+        },
+    );
+    // A new source generation re-initializes the same ask; no observation is newer.
+    driver.reinitialize(61300, "80", "25");
+    assert_ne!(driver.context.generation, generation);
+    engine
+        .paper_control(driver.context.run_id, Control::Resume)
+        .unwrap();
+    driver.input(
+        61400,
+        Payload::Book(driver.side_book(rules::Side::No, "25", 1, 61400, 4_000_000)),
+    );
+    assert_eq!(attempts(&path).len(), 1);
+    // The next genuine observation, numbered above the spent book, may fund a retry; numbers
+    // beyond i64 (here 2^63) must compare exactly.
+    let number = 1 << 63;
+    driver.observe(62000, number, "80", "25");
+    driver.input(
+        62000,
+        Payload::Book(driver.side_book(rules::Side::No, "25", number, 62000, 100_000_000)),
+    );
+    assert_eq!(attempts(&path).len(), 2);
 }
 
 #[test]

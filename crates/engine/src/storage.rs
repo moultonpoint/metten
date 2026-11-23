@@ -736,13 +736,13 @@ impl Recorder {
         } else {
             "no"
         };
-        // An IOC consumes its book snapshot; only a newer observation may fund another attempt.
-        let (confirmed,locked,unresolved,spent,attempts):(i64,Option<String>,bool,bool,i64)=tx.query_row("SELECT coalesce(sum(filled_quantity) FILTER (WHERE state IN ('full','partial')),0),max(side) FILTER (WHERE state IN ('full','partial')),coalesce(max(state IN ('intent','dispatched','unknown')),0),coalesce(max(dispatched_virtual_ms IS NOT NULL AND json_extract(evidence_identity,'$.binding_id')=?2 AND json_extract(evidence_identity,'$.generation')=?3 AND json_extract(evidence_identity,'$.value_transaction')=?4 AND json_extract(evidence_identity,'$.observation_number')=?5),0),count(*) FROM paper_attempts WHERE paper_market_id=?1",params![market,book.binding_id,book.source_generation.to_string(),book.value_transaction.to_string(),book.observation_number.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(paper_storage)?;
+        // An IOC consumes its book snapshot; only a strictly newer observation of that binding may
+        // fund another attempt. SourceState never lowers a binding's number, even across
+        // reconnects, so re-initialization is not new data. Canonical u64 strings compare by
+        // length, then text, keeping the full range.
+        let (confirmed,locked,unresolved,spent,attempts):(i64,Option<String>,bool,bool,i64)=tx.query_row("SELECT coalesce(sum(filled_quantity) FILTER (WHERE state IN ('full','partial')),0),max(side) FILTER (WHERE state IN ('full','partial')),coalesce(max(state IN ('intent','dispatched','unknown')),0),coalesce(max(dispatched_virtual_ms IS NOT NULL AND json_extract(evidence_identity,'$.binding_id')=?2 AND (length(json_extract(evidence_identity,'$.observation_number'))>length(?3) OR (length(json_extract(evidence_identity,'$.observation_number'))=length(?3) AND json_extract(evidence_identity,'$.observation_number')>=?3))),0),count(*) FROM paper_attempts WHERE paper_market_id=?1",params![market,book.binding_id,book.observation_number.to_string()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(paper_storage)?;
         if unresolved {
             return Err(Failure::new("unresolved"));
-        }
-        if attempts >= PAPER_ATTEMPT_LIMIT {
-            return Err(Failure::new("resource_limit"));
         }
         if candidate.remaining_quantity as i64 != quantity - confirmed
             || locked.as_deref().is_some_and(|locked| locked != side)
@@ -751,6 +751,9 @@ impl Recorder {
         }
         if spent {
             return Ok(None);
+        }
+        if attempts >= PAPER_ATTEMPT_LIMIT {
+            return Err(Failure::new("resource_limit"));
         }
         if book.ask.millionths() < i128::from(min) || book.ask.millionths() > i128::from(max) {
             return Err(Failure::new("price"));
@@ -913,9 +916,9 @@ impl Recorder {
             .leaves
             .iter()
             .find(|leaf| primary.option_id.as_ref() == Some(&leaf.option_id));
-        let (quantity,minimum,maximum,cash):(i64,i64,i64,i64)=tx.query_row("SELECT quantity,minimum_price,maximum_price,cash-reserved FROM paper_runs WHERE run_id=?1",[run],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(paper_storage)?;
+        let (quantity,minimum,maximum,cash):(i64,i64,i64,i64)=tx.query_row("SELECT quantity-(SELECT coalesce(sum(filled_quantity),0) FROM paper_attempts WHERE paper_market_id=?2 AND state IN ('full','partial')),minimum_price,maximum_price,cash-reserved FROM paper_runs WHERE run_id=?1",params![run,market],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(paper_storage)?;
         let offered = leaf.and_then(|leaf| leaf.purchase_price);
-        let check=serde_json::json!({"evaluated_at_ms":decision.evaluated_through_ms.to_string(),"offered_price":offered.map(|price|price.to_string()),"minimum_price":crate::paper::contract_cents(minimum),"maximum_price":crate::paper::contract_cents(maximum),"available_funds":cash.to_string(),"required_debit":offered.map(|price|crate::paper::charge(quantity as u64,price)).transpose()?.map(|charge|charge.debit.to_string())}).to_string();
+        let check=serde_json::json!({"evaluated_at_ms":decision.evaluated_through_ms.to_string(),"offered_price":offered.map(|price|price.to_string()),"minimum_price":crate::paper::contract_cents(minimum),"maximum_price":crate::paper::contract_cents(maximum),"available_funds":cash.to_string(),"required_debit":offered.filter(|_|quantity>0).map(|price|crate::paper::charge(quantity as u64,price)).transpose()?.map(|charge|charge.debit.to_string())}).to_string();
         let witness = serde_json::to_string(primary).map_err(|_| Failure::new("resource_limit"))?;
         tx.execute("UPDATE paper_markets SET summary=json_set(summary,'$.primary_witness',json(?3),'$.purchase_check',json(?4),'$.more_evidence',json(?5)),evidence_revision=evidence_revision+1 WHERE run_id=?1 AND paper_market_id=?2",params![run,market,witness,check,if decision.more_evidence {"true"}else{"false"}]).map_err(paper_storage)?;
         tx.commit().map_err(paper_storage)

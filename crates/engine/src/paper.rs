@@ -120,7 +120,7 @@ pub fn simulate(
     ask: Decimal,
     available_millionths: u64,
 ) -> Result<Fill, PaperError> {
-    charge(quantity, ask)?;
+    let whole = charge(quantity, ask)?;
     let filled = quantity.min(available_millionths / 1_000_000);
     Ok(if filled == 0 {
         Fill::Zero {
@@ -129,7 +129,7 @@ pub fn simulate(
     } else if filled == quantity {
         Fill::Full {
             quantity,
-            charge: charge(quantity, ask)?,
+            charge: whole,
         }
     } else {
         Fill::Partial {

@@ -183,6 +183,10 @@ impl<'a> Driver<'a> {
     /// A new observation of both next-market asks.
     #[allow(dead_code)] // Used by tests/paper.rs; lib.rs also includes this fixture.
     pub(super) fn observe(&mut self, at: u64, number: u64, yes: &str, no: &str) {
+        self.send(at, yes, no, Some(number));
+    }
+    #[allow(dead_code)] // Used by tests/paper.rs; lib.rs also includes this fixture.
+    fn send(&mut self, at: u64, yes: &str, no: &str, number: Option<u64>) {
         let updates = [(3, rules::Side::Yes, yes), (4, rules::Side::No, no)]
             .map(|(id, side, value)| src::BindingUpdate {
                 binding: rules::BindingDescriptor {
@@ -195,9 +199,12 @@ impl<'a> Driver<'a> {
                     },
                 },
                 unit: rules::RuleUnit::ContractCents,
-                value: Some(src::ValueUpdate::Observation {
-                    number,
-                    value: price(value),
+                value: Some(match number {
+                    Some(number) => src::ValueUpdate::Observation {
+                        number,
+                        value: price(value),
+                    },
+                    None => src::ValueUpdate::Initialize(price(value)),
                 }),
                 valid_until_ms: Some(1000000),
             })
@@ -211,6 +218,12 @@ impl<'a> Driver<'a> {
                 coverage: vec![],
             },
         );
+    }
+    /// Restates both next-market asks as initializations: a new value transaction that keeps
+    /// each observation number, so it is not newer market data.
+    #[allow(dead_code)] // Used by tests/paper.rs; lib.rs also includes this fixture.
+    pub(super) fn reinitialize(&mut self, at: u64, yes: &str, no: &str) {
+        self.send(at, yes, no, None);
     }
     /// A finite book bound to the latest observation of one next-market side.
     #[allow(dead_code)] // Used by tests/paper.rs; lib.rs also includes this fixture.

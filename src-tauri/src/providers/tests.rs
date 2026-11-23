@@ -3620,7 +3620,7 @@ fn retained_source_projection_reports_expiry_without_inventing_absence() {
 #[test]
 fn sources_header_names_only_a_verified_current_market() {
     use metten_engine::sources::{Scope, SourceEvent, Stream, Unavailable};
-    let (mut worker, _fence) = prepared_rollover_worker();
+    let (mut worker, fence) = prepared_rollover_worker();
     let projected = worker.snapshot(1).unwrap().wire_snapshot(1);
     assert_eq!(projected["current_market"], "KXBTC15M-0");
     assert_eq!(projected["markets"][0]["verified"], true);
@@ -3647,9 +3647,21 @@ fn sources_header_names_only_a_verified_current_market() {
             },
         ))
         .unwrap();
-    let projected = worker.snapshot(2).unwrap().wire_snapshot(2);
+    let published = worker.snapshot(2).unwrap();
+    let projected = published.wire_snapshot(2);
     assert_eq!(projected["markets"][0]["verified"], true);
     assert_eq!(projected["current_market"], "KXBTC15M-0");
+    for frame in [
+        br#"{"type":"subscribed","msg":{"sid":4,"channel":"market_lifecycle_v2"}}"#.as_slice(),
+        br#"{"type":"market_lifecycle_v2","sid":4,"seq":1,"msg":{"market_ticker":"KXBTC15M-0"}}"#,
+    ] {
+        feed_source(&mut worker, &fence, Provider::Kalshi, frame, 2, None).unwrap();
+    }
+    // The same published view, whose captured market is still verified, loses its metadata permission.
+    assert!(!published.stream_current(Stream::Metadata));
+    let projected = published.wire_snapshot(2);
+    assert_eq!(projected["markets"][0]["verified"], false);
+    assert!(projected["current_market"].is_null());
 }
 
 #[test]

@@ -1107,6 +1107,47 @@ fn failed_start_leaves_a_different_open_run_untouched() {
 }
 
 #[test]
+fn failed_retry_of_the_open_runs_own_go_id_still_fences_that_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+    let mut start = scenario(saved(&engine));
+    let reply = engine.paper_start(start.clone()).unwrap();
+    let context = reply.context.unwrap();
+    assert!(!engine.paper_effective().0);
+    // The strategy lookup fails before the Go id is matched to its run.
+    start.strategy_version_id = 999;
+    assert_eq!(engine.paper_start(start).unwrap_err().code, "storage");
+    assert!(engine.paper_effective().0);
+    let summary = engine.paper_summary(context.run_id).unwrap();
+    assert_eq!(summary.control_state, "unresolved");
+    assert_eq!(summary.error_code.as_deref(), Some("storage"));
+    let input = Input {
+        context,
+        ordinal: 1,
+        virtual_ms: 0,
+        payload: Payload::Source(src::Envelope {
+            clock: src::Clock {
+                at_ms: 0,
+                receipt_ms: 0,
+                received_through_ms: 0,
+                completed_frontier_ms: 0,
+            },
+            provider_identity: None,
+            provider_time_utc: None,
+            event: src::SourceEvent::Connection {
+                provider: src::Provider::Kalshi,
+                token: context.book_token,
+                state: src::Connection::Open,
+            },
+        }),
+    };
+    assert_eq!(
+        engine.paper_input(input).unwrap_err().code,
+        "stopped_context"
+    );
+}
+
+#[test]
 fn invalid_source_clock_is_rejected_before_pending_receipt_and_can_be_corrected() {
     let dir = tempfile::tempdir().unwrap();
     let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();

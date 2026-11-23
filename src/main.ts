@@ -436,7 +436,7 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
           const history = await invoke<PaperResponse>('paper', { operation: 'history' });
           if (!current()) return;
           if (history.kind !== 'history') throw new Error('Unexpected paper history');
-          paperHistory = history.page.markets; paperCursor = history.page.next_cursor; paperHistoryKey = key;
+          paperHistory = history.page.markets; paperCursor = history.page.next_cursor; paperHistoryKey = key; element('paper-journal-error').textContent = '';
           const latestCurrent = paperHistory.find(m => m.run_id === run?.run_id);
           if (!paperSelection && latestCurrent) paperSelection = { run_id: latestCurrent.run_id, paper_market_id: latestCurrent.paper_market_id };
           renderPaperHistory();
@@ -450,7 +450,7 @@ async function readPaper(kind: 'summary' | 'detail' | 'more' | 'evidence_more') 
         } catch {
           // The accepted status stays usable; the unchanged key retries history on the next summary.
           if (!current()) return;
-          element('paper-error').textContent = 'Paper history could not be read. Last confirmed history remains visible and is read again on the next refresh.';
+          element('paper-journal-error').textContent = 'Paper history could not be read. Last confirmed history remains visible and is read again on the next refresh.';
         }
       }
     }

@@ -159,6 +159,8 @@ pub struct Intake {
     pub receipt_ms: Option<u64>,
     pub source_tokens: Option<[metten_engine::sources::StreamToken; 6]>,
     progress: Option<watch::Sender<transport::Progress>>,
+    // The provider's retry state, credited when this frame's price is accepted; fixtures carry none.
+    retry: Option<Arc<std::sync::Mutex<budget::Retry>>>,
     completion: Option<tokio::sync::oneshot::Sender<Result<(), Failure>>>,
     fence: Fence,
 }
@@ -178,6 +180,7 @@ impl Intake {
             receipt_ms: None,
             source_tokens: None,
             progress: None,
+            retry: None,
             completion: None,
             fence: fence.clone(),
         }

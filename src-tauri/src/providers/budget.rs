@@ -180,6 +180,7 @@ pub struct Retry {
     seed: u64,
     next: Option<Instant>,
     usable_since: Option<Instant>,
+    cleared: Option<Instant>,
     pace: Duration,
 }
 impl Retry {
@@ -189,6 +190,7 @@ impl Retry {
             seed,
             next: None,
             usable_since: None,
+            cleared: None,
             pace: Duration::ZERO,
         }
     }
@@ -206,17 +208,20 @@ impl Retry {
     pub fn slow(&self) -> bool {
         self.failures >= 5
     }
-    // Test-only: production never calls this reset yet, so slow retry lasts until restart (#77).
-    #[cfg(test)]
-    pub fn usable(&mut self, now: Instant) {
-        let since = *self.usable_since.get_or_insert(now);
-        if now.saturating_duration_since(since) >= Duration::from_secs(30) {
+    /// Credits a price accepted at `at`; one accepted before the last failure, close or drop never counts.
+    pub fn usable(&mut self, at: Instant) {
+        if self.cleared.is_some_and(|cleared| at <= cleared) {
+            return;
+        }
+        let since = *self.usable_since.get_or_insert(at);
+        if at.saturating_duration_since(since) >= Duration::from_secs(30) {
             self.failures = 0;
             self.next = None;
         }
     }
     pub fn delay(&mut self, failure: Failure) -> Option<Duration> {
         self.usable_since = None;
+        self.cleared = Some(Instant::now());
         if failure != Failure::Transport {
             return None;
         }

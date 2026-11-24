@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Action, Snapshot, StrategyRequest, StrategyResponse, StrategyDetail, SourceName, SourceRequest, SourceResponse, SourceSnapshot, ProviderCredentialResponse } from './contract';
-import { presentation, strategyFailure, sourceFailure, sourcePresentation, paperMoney, paperFailure, paperReceipt, paperChecking, paperRecovery } from './view';
+import { presentation, strategyFailure, sourceFailure, sourcePresentation, paperMoney, paperFailure, paperReason, paperReceipt, paperChecking, paperRecovery } from './view';
 import './style.css';
 import learningExample from '../examples/learning.json?raw';
 import type { PaperRequest, PaperResponse, PaperSnapshot, PaperReceipt } from './contract';
@@ -385,6 +385,7 @@ function renderPaper(snapshot: PaperSnapshot): boolean {
     }
     risk += '. Final losses can exceed the threshold.';
   }
+  if (run?.current_risk_block) risk += ` ${paperReason(run.current_risk_block)}`;
   announce('paper-risk', risk);
   const errorCode = snapshot.playback_error ?? run?.error_code;
   announce('paper-error', errorCode ? paperFailure({ code: errorCode }) : paperRequestError);

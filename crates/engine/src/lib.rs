@@ -1056,6 +1056,15 @@ mod tests {
                 },
             );
             assert_eq!(current.summary.control_state, "active");
+            let early = engine.paper_check_settlement(old_run).unwrap().summary;
+            assert!(early.pending_holdings);
+            let early = engine
+                .paper_summary(current.context.run_id)
+                .unwrap()
+                .daily_risk
+                .unwrap();
+            assert_eq!(early.pending_holdings, "263130000");
+            assert_eq!(early.stop_reason, None);
             current.input(301000, Payload::Advance);
             engine.paper_check_settlement(old_run).unwrap();
             let run = current.context.run_id;

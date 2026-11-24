@@ -353,7 +353,7 @@ test('Now distinguishes daily settlement, holdings, reservations and the entry s
     pending_holdings: '263130000', pending_attempts: '200000000', maximum_loss: '500000000',
     profit_target: null, resume_next_day: false, stop_reason: 'daily_loss' };
   const h = await harness(t, { paper(args) {
-    if (args.operation === 'snapshot') return snapshot(run({ daily_risk }));
+    if (args.operation === 'snapshot') return snapshot(run({ daily_risk, current_risk_block: 'daily_budget' }));
     return history([]);
   } });
   await open(h);
@@ -363,6 +363,7 @@ test('Now distinguishes daily settlement, holdings, reservations and the entry s
   assert.match(status, /reserved attempts \$2\.00/);
   assert.match(status, /finishing the current market/);
   assert.match(status, /Final losses can exceed the threshold/);
+  assert.match(status, /whole purchase would exceed the remaining daily loss allowance/);
 
   const blocked = paperReceipt(receipt({ participated: false, risk_block: 'daily_entry_block',
     attempt_state: null, reason: 'prepared' }));

@@ -1341,5 +1341,18 @@ fn daily_limit_refuses_the_whole_first_objective_at_the_configured_ceiling() {
     let daily = driver.summary.daily_risk.as_ref().unwrap();
     assert_eq!(daily.stop_reason, None);
     assert_eq!(daily.pending_attempts, "0");
+    assert_eq!(
+        driver.summary.current_risk_block.as_deref(),
+        Some("daily_budget")
+    );
+    driver.observe(62000, 2, "80", "80");
+    assert_eq!(driver.summary.current_risk_block, None);
+    let history = engine
+        .paper_history(Some(driver.context.run_id), None)
+        .unwrap();
+    assert_eq!(
+        history.markets[0].risk_block.as_deref(),
+        Some("daily_budget")
+    );
     assert_eq!(driver.summary.control_state, "active");
 }

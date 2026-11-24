@@ -219,6 +219,17 @@ pub(super) fn reserve(db: &Connection, purchase: PurchaseRisk) -> Result<Option<
     Ok(Some(bound))
 }
 
+pub(super) fn settlement_frontier(db: &Connection, run: i64) -> Result<Option<i64>, Failure> {
+    db.query_row(
+        "SELECT max(r.go_utc_ms+r.virtual_frontier_ms)-target.go_utc_ms
+         FROM run_risk p JOIN paper_runs r USING(run_id) JOIN paper_runs target ON target.run_id=?1
+         WHERE p.scope=0 AND EXISTS(SELECT 1 FROM run_risk WHERE run_id=?1 AND scope=0)",
+        [run],
+        |row| row.get(0),
+    )
+    .map_err(paper_storage)
+}
+
 pub(super) fn settled(db: &Connection, run: i64, close_day: i64, at: i64) -> Result<(), Failure> {
     let Some(paid) = Policy::read(db, run)? else {
         return Ok(());
@@ -372,9 +383,10 @@ impl Recorder {
     ) -> Result<(), Failure> {
         self.connection
             .execute(
-                "UPDATE paper_markets SET summary=json_set(summary,'$.risk_block',?3),
+                "UPDATE paper_markets SET summary=json_set(summary,'$.risk_block',?3,'$.current_risk_block',?3),
              evidence_revision=evidence_revision+1 WHERE run_id=?1 AND source_market_id=?2
-             AND json_extract(summary,'$.risk_block') IS NOT ?3",
+             AND (json_extract(summary,'$.risk_block') IS NOT ?3
+             OR json_extract(summary,'$.current_risk_block') IS NOT ?3)",
                 params![run, market, reason],
             )
             .map_err(paper_storage)?;

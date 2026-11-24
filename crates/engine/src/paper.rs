@@ -385,6 +385,7 @@ pub struct RunSummary {
     pub pending_holdings: bool,
     pub recovery: Option<Recovery>,
     pub daily_risk: Option<DailyRisk>,
+    pub current_risk_block: Option<String>,
 }
 
 use crate::{sources, storage::Recorder, strategy};

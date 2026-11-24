@@ -49,6 +49,7 @@ export interface PaperRun {
   fee_model: string; simulation_model: string; scenario_revision: string; go_utc_ms: string;
   recovery: PaperRecovery | null;
   daily_risk: PaperDailyRisk | null;
+  current_risk_block: string | null;
 }
 /** Latest interrupted or unconfirmed attempt: what is being checked, or how the check ended. */
 export interface PaperRecovery {

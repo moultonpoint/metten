@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { setImmediate } from 'node:timers/promises';
-import { presentation, strategyFailure, sourceFailure, sourcePresentation, paperMoney, paperReceipt, paperFailure, paperChecking, paperRecovery } from '../src/view.ts';
+import { presentation, strategyFailure, sourceFailure, sourcePresentation, paperMoney, paperReason, paperReceipt, paperFailure, paperChecking, paperRecovery } from '../src/view.ts';
 
 export async function harness(t, replies = {}) {
   const elements = new Map();
@@ -49,7 +49,7 @@ export async function harness(t, replies = {}) {
     document,
     window: { setTimeout(callback, delay) { const id = ++timerId; timers.push({ callback, delay, id }); return id; }, clearTimeout(id) { const index = timers.findIndex(t => t.id === id); if (index >= 0) timers.splice(index, 1); } },
     crypto: { randomUUID() { return '00000000-0000-4000-8000-000000000001'; } },
-    TextEncoder, presentation, strategyFailure, sourceFailure, sourcePresentation, paperMoney, paperReceipt, paperFailure, paperChecking, paperRecovery, learningExample, invoke,
+    TextEncoder, presentation, strategyFailure, sourceFailure, sourcePresentation, paperMoney, paperReason, paperReceipt, paperFailure, paperChecking, paperRecovery, learningExample, invoke,
   });
   starting = false;
   await setImmediate();

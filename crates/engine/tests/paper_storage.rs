@@ -39,7 +39,7 @@ fn schema_three_migration_preserves_original_rows_and_is_transactional() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     assert_eq!(
         db.query_row("SELECT json FROM strategy_versions WHERE id=1", [], |r| {
@@ -148,7 +148,7 @@ fn failed_schema_four_migration_rolls_back_and_newer_workspace_refuses() {
         1
     );
     assert_eq!(db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('paper_runs','paper_markets','paper_attempts','paper_settlements')", [], |r|r.get::<_,i64>(0)).unwrap(),0);
-    db.execute_batch("PRAGMA user_version=7").unwrap();
+    db.execute_batch("PRAGMA user_version=8").unwrap();
     drop(db);
     assert!(Engine::open(&path).err().unwrap().contains("newer Metten"));
 }
@@ -246,7 +246,7 @@ fn schema_four_attempts_migrate_unchanged_and_reconcile() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     assert_eq!(db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('paper_attempts_v4','paper_one_dispatch')", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     // The migrated table enforces the finite objective: nothing beyond the filled 10.
@@ -363,7 +363,7 @@ fn schema_five_unmarked_intent_stays_uncertain_and_keeps_the_confirmed_partial()
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     let mut after = before.clone();
     after[1].1 = "unknown".into();

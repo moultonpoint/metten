@@ -26,11 +26,13 @@ pub struct Settings {
     pub minimum_price: Decimal,
     pub maximum_price: Decimal,
     pub starting_balance: i64,
+    pub limits: Option<DailyLimits>,
 }
 impl Settings {
     pub fn validate(&self) -> Result<(), PaperError> {
         if !(1..=1_000_000).contains(&self.quantity)
             || !(1..=1_000_000 * DOLLAR).contains(&self.starting_balance)
+            || self.limits.is_some_and(|limits| !limits.valid())
             || self.minimum_price.millionths() < 0
             || self.maximum_price.millionths() > i128::from(DOLLAR)
             || self.minimum_price.millionths() > self.maximum_price.millionths()
@@ -39,6 +41,54 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DailyLimits {
+    pub maximum_loss: i64,
+    pub profit_target: Option<i64>,
+    pub resume_next_day: bool,
+}
+
+impl DailyLimits {
+    fn valid(self) -> bool {
+        let amounts = 1..=1_000_000 * DOLLAR;
+        amounts.contains(&self.maximum_loss)
+            && self
+                .profit_target
+                .is_none_or(|target| amounts.contains(&target))
+    }
+
+    pub(crate) fn reached(self, settled: i64) -> Option<&'static str> {
+        if settled <= -self.maximum_loss {
+            Some("daily_loss")
+        } else if self.profit_target.is_some_and(|target| settled >= target) {
+            Some("daily_profit")
+        } else {
+            None
+        }
+    }
+}
+
+pub(crate) fn objective_bound(quantity: u64, price: Decimal) -> Result<i64, Failure> {
+    // Rounding each contract separately bounds every partition of the controlled IOC.
+    charge(1, price)?
+        .debit
+        .checked_mul(i64::try_from(quantity).map_err(|_| Failure::new("range"))?)
+        .ok_or_else(|| Failure::new("range"))
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct DailyRisk {
+    pub mode: &'static str,
+    pub utc_day: String,
+    pub settled_net: String,
+    pub pending_holdings: String,
+    pub pending_attempts: String,
+    pub maximum_loss: Option<String>,
+    pub profit_target: Option<String>,
+    pub resume_next_day: bool,
+    pub stop_reason: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -334,6 +384,8 @@ pub struct RunSummary {
     pub start_uuid: String,
     pub pending_holdings: bool,
     pub recovery: Option<Recovery>,
+    pub daily_risk: Option<DailyRisk>,
+    pub current_risk_block: Option<String>,
 }
 
 use crate::{sources, storage::Recorder, strategy};
@@ -460,22 +512,33 @@ impl Fence {
     }
 }
 pub(crate) enum Job {
-    Start(Start),
+    Start(Start, bool),
     /// The flag records whether admission counted this input as a source loss.
     Input(Box<Input>, bool),
     Control(i64, Control),
     Context(i64),
     CheckSettlement(i64),
+    #[cfg(test)]
+    FixtureFunds(i64, LiveFunds),
 }
 pub(crate) struct Owner {
     run: Option<Run>,
 }
+#[cfg(test)]
+pub(crate) struct LiveFunds {
+    pub cash: i64,
+    pub valid_from: i64,
+    pub valid_until: i64,
+}
+
 struct Run {
     id: i64,
     generation: u64,
     evaluator: strategy::Evaluator,
     sources: sources::SourceState,
     start: Start,
+    live: bool,
+    live_funds: Option<std::ops::Range<i64>>,
     bindings: Vec<strategy::BindingDescriptor>,
     books: Vec<Book>,
     open: bool,
@@ -495,24 +558,26 @@ impl Owner {
         venue: &mut dyn Venue,
         fence: &Arc<Mutex<Fence>>,
     ) -> Result<Reply, Failure> {
-        let include_bindings = matches!(&job, Job::Start(_) | Job::Context(_));
+        let include_bindings = matches!(&job, Job::Start(..) | Job::Context(_));
         let settlement_check = matches!(&job, Job::CheckSettlement(_));
         let mut created_context = false;
         // Only the run this job addresses may be closed by its failure. Before a Go's run id is
         // known it addresses only an open run with the same Go id; once the id is known, it
         // addresses the run with that id, even if it is stopped, or the run it creates.
         let mut target = match &job {
-            Job::Start(start) => self
+            Job::Start(start, _) => self
                 .run
                 .as_ref()
                 .filter(|run| run.open && run.start.start_uuid == start.start_uuid)
                 .map(|run| run.id),
             Job::Input(input, _) => Some(input.context.run_id),
             Job::Control(id, _) | Job::Context(id) | Job::CheckSettlement(id) => Some(*id),
+            #[cfg(test)]
+            Job::FixtureFunds(id, _) => Some(*id),
         };
         let result = (|| {
             let (summary, context) = match job {
-                Job::Start(start) => {
+                Job::Start(start, live) => {
                     let mut recorder = lock(store)?;
                     let version = match recorder
                         .strategy_detail(start.strategy_version_id)
@@ -539,14 +604,14 @@ impl Owner {
                     }) {
                         return Err(Failure::new("unsupported_input"));
                     }
-                    let (id, existing) = recorder.paper_prepare_id(&start.start_uuid)?;
+                    let (id, existing) = recorder.paper_prepare_id(&start.start_uuid, live)?;
                     target = Some(id);
                     let prepared = if existing {
                         None
                     } else {
-                        Some(Run::new(id, start.clone(), rules)?)
+                        Some(Run::new(id, start.clone(), rules, live)?)
                     };
-                    let summary = recorder.paper_start(&start, id)?;
+                    let summary = recorder.paper_start(&start, id, live)?;
                     if self.run.as_ref().is_some_and(|run| run.id == id) {
                         (
                             summary,
@@ -639,6 +704,25 @@ impl Owner {
                             .ok_or_else(|| Failure::new("resource_limit"))?;
                     }
                     (summary, Some(run.context()))
+                }
+                #[cfg(test)]
+                Job::FixtureFunds(id, funds) => {
+                    let run = self
+                        .run
+                        .as_mut()
+                        .filter(|run| run.id == id && run.live && run.open)
+                        .ok_or_else(|| Failure::new("stale_run"))?;
+                    let mut recorder = lock(store)?;
+                    if funds.cash < 0
+                        || funds.valid_from < 0
+                        || funds.valid_until <= funds.valid_from
+                        || recorder.paper_has_unconfirmed_purchase(id)?
+                    {
+                        return Err(Failure::new("range"));
+                    }
+                    recorder.fixture_live_cash(id, funds.cash)?;
+                    run.live_funds = Some(funds.valid_from..funds.valid_until);
+                    (recorder.paper_summary(id)?, Some(run.context()))
                 }
                 Job::CheckSettlement(id) => {
                     if self.run.as_ref().is_some_and(|r| r.id == id && r.open) {
@@ -755,7 +839,12 @@ impl Owner {
     }
 }
 impl Run {
-    fn new(id: i64, start: Start, rules: crate::ValidatedStrategy) -> Result<Self, Failure> {
+    fn new(
+        id: i64,
+        start: Start,
+        rules: crate::ValidatedStrategy,
+        live: bool,
+    ) -> Result<Self, Failure> {
         let mut bindings = Vec::new();
         for market in &start.markets {
             for requirement in rules.source_requirements() {
@@ -810,6 +899,8 @@ impl Run {
             evaluator,
             sources,
             start,
+            live,
+            live_funds: None,
             bindings,
             books: Vec::new(),
             open: true,
@@ -925,11 +1016,10 @@ impl Run {
         // Monitoring continues while a purchase is checked: consult the venue before deciding.
         reconcile(store, venue, Some(self.id), "no_outcome")?;
         let mut recorder = lock(store)?;
+        recorder.paper_apply_deferred(Some(self.id), at)?;
         if let Payload::Settlement(entry) = &input.payload {
-            if !self.start.settlement_manifest.contains(entry) {
-                return Err(Failure::new("input_conflict"));
-            }
             recorder.paper_settle(self.id, entry, at)?;
+            self.live_funds = None;
         } else {
             if let Payload::Book(book) = &input.payload {
                 if book.accepted_ms > input.virtual_ms
@@ -1058,15 +1148,40 @@ impl Run {
                     _ => return Err(Failure::new("unavailable_evidence")),
                 }
             };
-            if !self.participating && fence.lock().unwrap().stop_after_market {
-                self.open = false;
-            }
-            if let Some(market) = self.current_market.as_ref().filter(|market| {
-                decision.phase == "Active"
+            if !self.participating {
+                let fence = fence.lock().unwrap();
+                if fence.stop_after_market || fence.quit || fence.input_stopped {
+                    self.open = false;
+                }
+                if let Some(market) = self.current_market.as_ref()
                     && self.open
-                    && (self.participating || entered.as_ref() == Some(*market))
-            }) {
-                self.participating = true;
+                    && entered.as_ref() == Some(market)
+                    && decision.phase == "Active"
+                {
+                    let safe_to_resume = !fence.purchases_blocked()
+                        && !recorder.paper_has_unconfirmed_purchase(self.id)?
+                        && (!self.live
+                            || self
+                                .live_funds
+                                .as_ref()
+                                .is_some_and(|funds| funds.contains(&at)));
+                    if recorder.paper_allow_entry(self.id, market, at, safe_to_resume)? {
+                        self.participating = true;
+                    } else if self
+                        .start
+                        .settings
+                        .limits
+                        .is_some_and(|limits| !limits.resume_next_day)
+                    {
+                        self.open = false;
+                    }
+                }
+            }
+            if let Some(market) = self
+                .current_market
+                .as_ref()
+                .filter(|_| decision.phase == "Active" && self.open && self.participating)
+            {
                 recorder.paper_decision(self.id, market, &decision)?;
                 recorder.paper_market_progress(
                     self.id,
@@ -1088,6 +1203,7 @@ impl Run {
                 )?;
             }
             if self.open
+                && self.participating
                 && purchasable
                 && fence.lock().unwrap().purchases_blocked()
                 && decision
@@ -1099,6 +1215,7 @@ impl Run {
                 recorder.paper_market_progress(self.id, market, "purchases_paused", true)?;
             }
             if self.open
+                && self.participating
                 && purchasable
                 && let Some(candidate) = decision.candidate
             {
@@ -1131,11 +1248,36 @@ impl Run {
                         .map_err(|_| Failure::new("unavailable_evidence"))?;
                     if self.sources.is_current(&stamp) && !fence.lock().unwrap().purchases_blocked()
                     {
-                        let intent = recorder.paper_intent(self.id, &candidate, book, at);
+                        let have_funds = !self.live
+                            || self
+                                .live_funds
+                                .as_ref()
+                                .is_some_and(|funds| funds.contains(&at));
+                        let intent = if have_funds {
+                            recorder.paper_intent(self.id, &candidate, book, at)
+                        } else {
+                            Err(Failure::new("funds_unavailable"))
+                        };
                         match intent {
                             Err(error)
-                                if error.code == "insufficient_funds" || error.code == "price" =>
+                                if matches!(
+                                    error.code,
+                                    "insufficient_funds"
+                                        | "price"
+                                        | "daily_budget"
+                                        | "funds_unavailable"
+                                ) =>
                             {
+                                if matches!(error.code, "daily_budget" | "funds_unavailable")
+                                    || error.code == "insufficient_funds"
+                                        && self.start.settings.limits.is_some()
+                                {
+                                    recorder.paper_risk_refusal(
+                                        self.id,
+                                        &candidate.market_id,
+                                        error.code,
+                                    )?;
+                                }
                                 recorder.paper_market_progress(
                                     self.id,
                                     &candidate.market_id,
@@ -1164,6 +1306,7 @@ impl Run {
                                     stop();
                                     // Pause and Quit wait for the marker: either they win, or the order is dispatched.
                                     let order = recorder.paper_dispatch(self.id, attempt, at)?;
+                                    self.live_funds = None;
                                     drop(f);
                                     drop(recorder);
                                     let reply = venue.submit(&order);
@@ -1476,6 +1619,8 @@ pub struct MarketReceipt {
     pub close_utc_ms: String,
     pub close_day: String,
     pub reason: String,
+    pub participated: bool,
+    pub risk_block: Option<String>,
     pub primary_witness: Option<serde_json::Value>,
     pub purchase_check: Option<serde_json::Value>,
     pub more_evidence: bool,
@@ -1569,6 +1714,7 @@ impl Scenario {
                 minimum_price: Decimal::parse("0").unwrap(),
                 maximum_price: Decimal::parse("100").unwrap(),
                 starting_balance: DOLLAR,
+                limits: None,
             },
             899000,
         )?;
@@ -1728,13 +1874,16 @@ pub fn decode_request(value: &serde_json::Value) -> Result<Request, Failure> {
                 .get("settings")
                 .and_then(|v| v.as_object())
                 .ok_or_else(invalid)?;
-            if settings.len() != 4
+            if settings.len() != 7
                 || settings.keys().any(|k| {
                     ![
                         "quantity",
                         "minimum_price",
                         "maximum_price",
                         "starting_balance",
+                        "maximum_loss",
+                        "profit_target",
+                        "resume_next_day",
                     ]
                     .contains(&k.as_str())
                 })
@@ -1755,6 +1904,17 @@ pub fn decode_request(value: &serde_json::Value) -> Result<Request, Failure> {
                 maximum_price: Decimal::parse(field("maximum_price")?)
                     .map_err(|_| Failure::new("range"))?,
                 starting_balance: parse_dollars(field("starting_balance")?)?,
+                limits: Some(DailyLimits {
+                    maximum_loss: parse_dollars(field("maximum_loss")?)?,
+                    profit_target: match settings.get("profit_target") {
+                        Some(serde_json::Value::Null) => None,
+                        _ => Some(parse_dollars(field("profit_target")?)?),
+                    },
+                    resume_next_day: settings
+                        .get("resume_next_day")
+                        .and_then(serde_json::Value::as_bool)
+                        .ok_or_else(invalid)?,
+                }),
             };
             settings.validate()?;
             Request::Start {

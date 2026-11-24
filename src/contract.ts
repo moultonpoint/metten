@@ -28,6 +28,18 @@ export interface SourceSnapshot { kind: 'snapshot'; owner: string; revision: str
 export type SourceResponse = SourceSnapshot | { kind: 'details'; source: SourceName; values: unknown[]; bindings?: SourceBinding[]; notice: string; counters?: SourceCounters[] } | { kind: 'requirements'; version_id: string; requirements: { input_id: string; source: string; instrument: string; field: string; unit: string; side: string | null; startup_ms: string; implicit: boolean }[] } | { kind: 'action'; source: SourceName; accepted: boolean };
 export type ProviderCredentialResponse = { kind: 'missing' } | { kind: 'saved'; key_id: string; key_type: string } | { kind: 'credential_changed'; operation: string };
 
+export interface PaperDailyRisk {
+  mode: 'paper' | 'controlled_live';
+  utc_day: string;
+  settled_net: string;
+  pending_holdings: string;
+  pending_attempts: string;
+  maximum_loss: string | null;
+  profit_target: string | null;
+  resume_next_day: boolean;
+  stop_reason: 'daily_loss' | 'daily_profit' | null;
+}
+
 export interface PaperRun {
   run_id: string; start_uuid: string; strategy_version_id: string; revision: string; history_revision: string;
   control_state: 'collecting' | 'waiting' | 'active' | 'paused' | 'stopped' | 'unresolved';
@@ -36,6 +48,8 @@ export interface PaperRun {
   quantity: string; minimum_price: string; maximum_price: string; starting_balance: string;
   fee_model: string; simulation_model: string; scenario_revision: string; go_utc_ms: string;
   recovery: PaperRecovery | null;
+  daily_risk: PaperDailyRisk | null;
+  current_risk_block: string | null;
 }
 /** Latest interrupted or unconfirmed attempt: what is being checked, or how the check ended. */
 export interface PaperRecovery {
@@ -50,6 +64,8 @@ export interface PaperWitness {
   observed: string | null; required: string | null; comparison: string | null; unit: string | null; evaluated_at_ms: string; transaction: string;
 }
 export interface PaperReceipt {
+  participated: boolean;
+  risk_block: string | null;
   run_id: string; strategy_version_id: string; paper_market_id: string; source_market_id: string; source_contract_id: string; series_id: string;
   open_utc_ms: string; close_utc_ms: string; close_day: string; reason: string; primary_witness: PaperWitness | null; purchase_check: { evaluated_at_ms: string; offered_price: string | null; minimum_price: string; maximum_price: string; available_funds: string; required_debit: string | null } | null; more_evidence: boolean; requested_quantity: string;
   attempt_state: 'intent' | 'dispatched' | 'full' | 'partial' | 'zero' | 'canceled' | 'unknown' | null; attempt_count: string;
@@ -58,7 +74,7 @@ export interface PaperReceipt {
   settled_net: string | null; winning_side: string | null; settlement_virtual_ms: string | null; settlement_recorded_at: string | null;
   recovery: PaperRecovery | null;
 }
-export interface PaperSettings { quantity: string; minimum_price: string; maximum_price: string; starting_balance: string }
+export interface PaperSettings { quantity: string; minimum_price: string; maximum_price: string; starting_balance: string; maximum_loss: string; profit_target: string | null; resume_next_day: boolean }
 export type PaperRequest =
   | { operation: 'start'; start_uuid: string; version_id: string; settings: PaperSettings }
   | { operation: 'pause' | 'resume' | 'stop_after_market' | 'check_settlement'; run_id: string }

@@ -61,6 +61,9 @@ test('unconfirmed Go retries preserve exact settings and start UUID', async t =>
   } });
   await open(h); h.element('paper-version').value = '1'; h.element('paper-version').handlers.change();
   for (const [id, value] of [['quantity', '10'], ['minimum', '25.000001'], ['maximum', '30'], ['balance', '100.00000001']]) h.element(`paper-${id}`).value = value;
+  h.element('paper-loss-limit').value = '12.345';
+  h.element('paper-profit-target').value = '5';
+  h.element('paper-next-day').checked = true;
   h.click('paper-go'); await h.flush();
   assert.match(h.element('paper-status').textContent, /waiting for confirmation/);
   assert.equal(h.element('paper-settings').disabled, true);
@@ -68,6 +71,9 @@ test('unconfirmed Go retries preserve exact settings and start UUID', async t =>
   h.element('paper-quantity').value = '999'; h.click('paper-go'); await h.flush();
   assert.equal(JSON.stringify(starts[1].args), JSON.stringify(starts[0].args));
   assert.equal(starts[1].args.settings.starting_balance, '100.00000001');
+  assert.equal(starts[1].args.settings.maximum_loss, '12.345');
+  assert.equal(starts[1].args.settings.profit_target, '5');
+  assert.equal(starts[1].args.settings.resume_next_day, true);
   starts[1].reject({ code: 'busy' }); await h.flush();
   assert.doesNotMatch(h.element('paper-error').textContent, /private-marker/);
 });
@@ -339,4 +345,31 @@ test('a failed More markets read keeps the previous page and reports itself besi
   assert.equal(h.element('paper-status').textContent, 'Stopped · purchases remain stopped');
   assert.equal(h.element('paper-settle').disabled, false);
   assert.equal(h.element('paper-more').disabled, false);
+});
+
+
+test('Now distinguishes daily settlement, holdings, reservations and the entry stop', async t => {
+  const daily_risk = { mode: 'paper', utc_day: '20776', settled_net: '-500000000',
+    pending_holdings: '263130000', pending_attempts: '200000000', maximum_loss: '500000000',
+    profit_target: null, resume_next_day: false, stop_reason: 'daily_loss' };
+  const h = await harness(t, { paper(args) {
+    if (args.operation === 'snapshot') return snapshot(run({ daily_risk, current_risk_block: 'daily_budget' }));
+    return history([]);
+  } });
+  await open(h);
+  const status = h.element('paper-risk').textContent;
+  assert.match(status, /settled −\$5\.00/);
+  assert.match(status, /pending holdings \$2\.6313/);
+  assert.match(status, /reserved attempts \$2\.00/);
+  assert.match(status, /finishing the current market/);
+  assert.match(status, /Final losses can exceed the threshold/);
+  assert.match(status, /whole purchase would exceed the remaining daily loss allowance/);
+
+  const blocked = paperReceipt(receipt({ participated: false, risk_block: 'daily_entry_block',
+    attempt_state: null, reason: 'prepared' }));
+  assert.match(blocked.reason, /threshold blocked entry/);
+  const settled = paperReceipt(receipt({ risk_block: 'daily_budget', reason: 'settled',
+    settled_net: '736870000', payout: '1000000000' }));
+  assert.match(Object.fromEntries(settled.facts)['Risk decision'], /remaining daily loss allowance/);
+  assert.equal(Object.fromEntries(settled.facts)['Settled net'], '$7.3687');
 });

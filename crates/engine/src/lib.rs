@@ -302,6 +302,9 @@ impl Engine {
             let mut recorder = recorder
                 .lock()
                 .map_err(|_| recording_error("Recorder unavailable."))?;
+            recorder
+                .paper_apply_deferred(None, 0)
+                .map_err(|_| recording_error("Deferred settlement could not be recorded."))?;
             let previous = recorder.latest().map_err(|e| recording_error(&e))?;
             let tick = previous.first().map_or(0, |r| r.tick);
             // Every open records a stopped boundary, including after an unexpected exit.
@@ -344,7 +347,7 @@ impl Engine {
                 let mut paper_owner = paper::Owner::new();
                 for request in receiver {
                     if let Some((job, admitted_generation, completion)) = request.paper {
-                        let starting = matches!(&job, paper::Job::Start(_));
+                        let starting = matches!(&job, paper::Job::Start(..));
                         let resuming =
                             matches!(&job, paper::Job::Control(_, paper::Control::Resume));
                         let mut result =
@@ -621,8 +624,19 @@ impl Engine {
     }
 
     pub fn paper_start(&self, start: paper::Start) -> Result<paper::Reply, paper::Failure> {
-        self.paper_job(paper::Job::Start(start), None)
+        self.paper_job(paper::Job::Start(start, false), None)
     }
+    #[cfg(test)]
+    fn fixture_live_start(&self, start: paper::Start) -> Result<paper::Reply, paper::Failure> {
+        self.paper_job(paper::Job::Start(start, true), None)
+    }
+
+    #[cfg(test)]
+    fn fixture_live_funds(&self, run: i64, funds: paper::LiveFunds) -> Result<(), paper::Failure> {
+        self.paper_job(paper::Job::FixtureFunds(run, funds), None)
+            .map(|_| ())
+    }
+
     pub fn paper_input(&self, input: paper::Input) -> Result<paper::Reply, paper::Failure> {
         self.paper_job(paper::Job::Input(Box::new(input), false), None)
     }
@@ -765,7 +779,7 @@ impl Engine {
             if let paper::Job::Input(input, _) = &job {
                 input.canonical()?;
             }
-            if let paper::Job::Start(start) = &job {
+            if let paper::Job::Start(start, _) = &job {
                 start.validate()?;
             }
             let generation =
@@ -903,6 +917,219 @@ mod tests {
     fn learning_paper_start(engine: &Engine) -> paper::Start {
         fixture::scenario(fixture::saved(engine))
     }
+    #[test]
+    fn live_daily_limit_uses_workspace_results_and_sticky_rollover_permissions() {
+        const MIDNIGHT: i64 = 20_779 * 86_400_000;
+        for (resume, pause) in [(false, false), (true, false), (true, true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("workspace.sqlite");
+            let engine = Engine::open(&path).unwrap();
+            let mut paper_start = learning_paper_start(&engine);
+            paper_start.go_utc_ms = MIDNIGHT - 1_802_000;
+            paper_start.settings.limits = Some(DailyLimits {
+                maximum_loss: 100 * DOLLAR,
+                profit_target: None,
+                resume_next_day: false,
+            });
+            let paper_reply = engine.paper_start(paper_start.clone()).unwrap();
+            let mut paper = Driver {
+                engine: &engine,
+                context: paper_reply.context.unwrap(),
+                ordinal: 0,
+                summary: paper_reply.summary,
+            };
+            paper.prepare();
+            paper.input(61000, Payload::Book(paper.book(100_000_000)));
+            paper.input(
+                901000,
+                Payload::Settlement(paper_start.settlement_manifest.remove(0)),
+            );
+            assert_eq!(paper.summary.cash, "10736870000");
+
+            let mut start = learning_paper_start(&engine);
+            start.start_uuid.replace_range(35.., "2");
+            start.go_utc_ms = MIDNIGHT - 1_802_000;
+            start.settings.limits = Some(DailyLimits {
+                maximum_loss: 100 * DOLLAR,
+                profit_target: None,
+                resume_next_day: false,
+            });
+            start.settlement_manifest[0].winning_side = rules::Side::Yes;
+            start.settlement_manifest[0].available_ms = 1_201_000;
+            let reply = engine.fixture_live_start(start.clone()).unwrap();
+            let mut old = Driver {
+                engine: &engine,
+                context: reply.context.unwrap(),
+                ordinal: 0,
+                summary: reply.summary,
+            };
+            assert_eq!(old.summary.daily_risk.as_ref().unwrap().settled_net, "0");
+            old.prepare();
+            let funds = |cash, valid_until| LiveFunds {
+                cash,
+                valid_from: 0,
+                valid_until,
+            };
+            engine
+                .fixture_live_funds(old.context.run_id, funds(100 * DOLLAR, 61000))
+                .unwrap();
+            old.input(61000, Payload::Book(old.book(100_000_000)));
+            let old_run = old.context.run_id;
+            let history = engine.paper_history(Some(old_run), None).unwrap();
+            assert_eq!(
+                history.markets[0].risk_block.as_deref(),
+                Some("funds_unavailable")
+            );
+            assert_eq!(history.markets[0].attempt_count, "0");
+            engine
+                .fixture_live_funds(old_run, funds(5 * DOLLAR, 62000))
+                .unwrap();
+            old.input(61000, Payload::Book(old.book(100_000_000)));
+            let history = engine.paper_history(Some(old_run), None).unwrap();
+            assert_eq!(
+                history.markets[0].risk_block.as_deref(),
+                Some("insufficient_funds")
+            );
+            assert_eq!(history.markets[0].attempt_count, "0");
+            engine
+                .fixture_live_funds(old_run, funds(100 * DOLLAR, 62000))
+                .unwrap();
+            old.input(61000, Payload::Book(old.book(100_000_000)));
+            assert_eq!(
+                old.summary.daily_risk.as_ref().unwrap().pending_holdings,
+                "263130000"
+            );
+            old.input(901000, Payload::Advance);
+            assert_eq!(old.summary.control_state, "stopped");
+
+            start.start_uuid.replace_range(35.., "3");
+            start.go_utc_ms = MIDNIGHT - 901_000;
+            start.settings.limits = Some(DailyLimits {
+                maximum_loss: 263130000,
+                profit_target: None,
+                resume_next_day: resume,
+            });
+            start.settlement_manifest.clear();
+            start.markets[0].open_ms = 1000;
+            start.markets[0].close_ms = 901000;
+            start.markets[1].open_ms = 901000;
+            start.markets[1].close_ms = 1801000;
+            let reply = engine.fixture_live_start(start.clone()).unwrap();
+            let mut current = Driver {
+                engine: &engine,
+                context: reply.context.unwrap(),
+                ordinal: 0,
+                summary: reply.summary,
+            };
+            assert_eq!(
+                current
+                    .summary
+                    .daily_risk
+                    .as_ref()
+                    .unwrap()
+                    .pending_holdings,
+                "263130000"
+            );
+            current.source(
+                0,
+                src::SourceEvent::Connection {
+                    provider: src::Provider::Kalshi,
+                    token: current.context.book_token,
+                    state: src::Connection::Open,
+                },
+            );
+            for market in &start.markets {
+                current.source(
+                    0,
+                    src::SourceEvent::Metadata {
+                        token: current.context.metadata_token,
+                        market_id: market.market_id.clone(),
+                        verified: true,
+                    },
+                );
+            }
+            current.update(0, true);
+            current.source(
+                1000,
+                src::SourceEvent::Boundary {
+                    market_id: start.markets[0].market_id.clone(),
+                },
+            );
+            assert_eq!(current.summary.control_state, "active");
+            let early = engine.paper_check_settlement(old_run).unwrap().summary;
+            assert!(early.pending_holdings);
+            let early = engine
+                .paper_summary(current.context.run_id)
+                .unwrap()
+                .daily_risk
+                .unwrap();
+            assert_eq!(early.pending_holdings, "263130000");
+            assert_eq!(early.stop_reason, None);
+            current.input(301000, Payload::Advance);
+            engine.paper_check_settlement(old_run).unwrap();
+            let run = current.context.run_id;
+            let daily = engine.paper_summary(run).unwrap().daily_risk.unwrap();
+            assert_eq!(daily.settled_net, "-263130000");
+            assert_eq!(daily.pending_holdings, "0");
+            assert_eq!(daily.stop_reason, Some("daily_loss".into()));
+            engine
+                .fixture_live_funds(run, funds(100 * DOLLAR, 1_000_000))
+                .unwrap();
+            if pause {
+                engine.paper_control(run, Control::Pause).unwrap();
+            }
+            current.source(
+                901000,
+                src::SourceEvent::Boundary {
+                    market_id: start.markets[1].market_id.clone(),
+                },
+            );
+            let history = engine.paper_history(Some(run), None).unwrap();
+            let next = history
+                .markets
+                .iter()
+                .find(|r| r.source_market_id == start.markets[1].market_id)
+                .unwrap();
+            assert_eq!(next.participated, resume && !pause);
+            assert_eq!(
+                current.summary.daily_risk.as_ref().unwrap().settled_net,
+                "0"
+            );
+            assert_eq!(
+                current
+                    .summary
+                    .daily_risk
+                    .as_ref()
+                    .unwrap()
+                    .stop_reason
+                    .is_none(),
+                resume && !pause
+            );
+
+            drop(engine);
+            let reopened = Engine::open(&path).unwrap();
+            assert_eq!(
+                reopened.paper_summary(run).unwrap().control_state,
+                "stopped"
+            );
+            assert!(reopened.paper_context(run).is_err());
+            start.start_uuid.replace_range(35.., "4");
+            assert_eq!(
+                reopened.fixture_live_start(start).unwrap_err().code,
+                "range"
+            );
+            assert_eq!(
+                reopened
+                    .paper_summary(old_run)
+                    .unwrap()
+                    .daily_risk
+                    .unwrap()
+                    .settled_net,
+                "-263130000"
+            );
+        }
+    }
+
     #[test]
     fn pause_stays_effective_after_start_saves_before_pause_saves() {
         let dir = tempfile::tempdir().unwrap();

@@ -13,6 +13,7 @@ pub(super) fn scenario(version: i64) -> Start {
             minimum_price: price("0"),
             maximum_price: price("100"),
             starting_balance: 100 * DOLLAR,
+            limits: None,
         },
         1795046400000,
     )

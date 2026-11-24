@@ -936,3 +936,84 @@ fn clock_jumps_never_replay_missed_purchase_ticks_or_enter_late() {
     assert!(participated(&engine, run).is_empty());
     assert!(latches(&engine, run).is_empty());
 }
+
+#[test]
+fn delayed_settlement_releases_pending_risk_but_keeps_the_market_close_day() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("workspace.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    let mut start = two_windows(&engine);
+    start.go_utc_ms = 20_779 * 86_400_000 - 901_001;
+    start.settings.limits = Some(DailyLimits {
+        maximum_loss: 100 * DOLLAR,
+        profit_target: Some(DOLLAR),
+        resume_next_day: false,
+    });
+    let final_result = SettlementManifestEntry {
+        source_market_id: start.markets[0].market_id.clone(),
+        source_contract_id: start.markets[0].contract_id.clone(),
+        close_ms: 901000,
+        outcome_id: "final-a".into(),
+        winning_side: No,
+        available_ms: 902000,
+    };
+    start.settlement_manifest.push(final_result.clone());
+    let mut driver = driver_for(&engine, start);
+    enter_a(&mut driver);
+    send(
+        &mut driver,
+        61000,
+        update(
+            "KXBTC15M-PAPER-A",
+            "paper-a",
+            1,
+            "80",
+            "25",
+            Some(1),
+            2000000,
+        ),
+    );
+    driver.input(61000, Payload::Book(book_a(&driver, 1, 61000)));
+    driver.source(
+        901000,
+        src::SourceEvent::Boundary {
+            market_id: "KXBTC15M-PAPER-B".into(),
+        },
+    );
+    driver.input(901001, Payload::Advance);
+    let daily = driver.summary.daily_risk.as_ref().unwrap();
+    assert_eq!(daily.utc_day, "20779");
+    assert_eq!(daily.pending_holdings, "263130000");
+    let first = driver.input(902000, Payload::Settlement(final_result.clone()));
+    // A replay with a new ordinal also has no financial effect.
+    driver.input(first.virtual_ms, Payload::Settlement(final_result.clone()));
+    let daily = driver.summary.daily_risk.as_ref().unwrap();
+    assert_eq!(daily.settled_net, "0");
+    assert_eq!(daily.pending_holdings, "0");
+    assert_eq!(daily.stop_reason, None);
+    let history = engine
+        .paper_history(Some(driver.context.run_id), None)
+        .unwrap();
+    let market = history
+        .markets
+        .iter()
+        .find(|m| m.source_market_id == final_result.source_market_id)
+        .unwrap();
+    assert_eq!(market.close_day, "20778");
+    assert_eq!(market.settled_net.as_deref(), Some("736870000"));
+    assert_eq!(driver.summary.control_state, "active");
+
+    let mut conflict = final_result;
+    conflict.winning_side = Yes;
+    let failure = engine
+        .paper_input(next(&driver, 902000, Payload::Settlement(conflict)))
+        .unwrap_err();
+    assert_eq!(failure.code, "report_conflict");
+    let run = driver.context.run_id;
+    drop(engine);
+    let engine = Engine::open(&path).unwrap();
+    assert_eq!(
+        engine.paper_summary(run).unwrap().error_code.as_deref(),
+        Some("report_conflict")
+    );
+}

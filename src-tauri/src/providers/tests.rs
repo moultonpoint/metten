@@ -353,6 +353,8 @@ async fn retry_is_bounded_and_stop_interrupts_backoff() {
         assert!(delay <= Duration::from_secs(seconds) + Duration::from_millis(250));
     }
     assert!(retry.slow());
+    // A credit at the failure instant would be ignored; step so this one starts the interval.
+    tokio::time::advance(Duration::from_secs(1)).await;
     retry.usable(Instant::now());
     tokio::time::advance(Duration::from_secs(29)).await;
     retry.usable(Instant::now());
@@ -1146,6 +1148,29 @@ async fn obsolete_admission_has_a_bounded_reason_counter() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn price_accepted_before_a_failure_never_starts_the_next_interval() {
+    let mut retry = budget::Retry::new(1);
+    for _ in 0..5 {
+        retry.delay(Failure::Transport);
+    }
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let accepted = Instant::now();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    retry.delay(Failure::Transport);
+    // The worker reaches the lock only after the failure.
+    retry.usable(accepted);
+    tokio::time::advance(Duration::from_secs(30)).await;
+    retry.usable(Instant::now());
+    assert!(
+        retry.slow(),
+        "the pre-failure price cannot start the interval"
+    );
+    tokio::time::advance(Duration::from_secs(30)).await;
+    retry.usable(Instant::now());
+    assert!(!retry.slow());
+}
+
+#[tokio::test(start_paused = true)]
 async fn slow_retry_claims_a_minute_slot_even_when_the_attempt_succeeds() {
     let mut retry = budget::Retry::new(1);
     for _ in 0..5 {
@@ -1539,17 +1564,35 @@ async fn late_reader_cannot_stretch_twenty_nine_seconds_of_prices() {
 }
 
 #[tokio::test]
-async fn shared_failure_between_prices_restarts_the_thirty_seconds() {
+async fn shared_failure_between_acceptance_and_credit_restarts_the_thirty_seconds() {
     let mut served = Served::start(Provider::Coinbase).await;
-    served.frame(coinbase_match(10)).await;
-    served.transport.retry_failed(Provider::Coinbase);
+    served.frames.send(coinbase_match(10)).unwrap();
+    let item = tokio::time::timeout(SHUTDOWN, served.receipts.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let retry = item.retry.clone().unwrap();
+    let at = u64::try_from(served.start.elapsed().as_millis()).unwrap();
+    let runtime = tokio::runtime::Handle::current();
+    let worker = &mut served.worker;
+    tokio::time::pause();
+    std::thread::scope(|scope| {
+        let mut held = retry.lock().unwrap();
+        let processed = scope.spawn(move || {
+            let _clock = runtime.enter();
+            worker.process(item, at, 0, |_| Ok(()))
+        });
+        // The clock is paused, so the price is accepted no later than this failure, which its credit follows.
+        held.delay(Failure::Transport);
+        drop(held);
+        processed.join().unwrap().unwrap();
+    });
+    tokio::time::resume();
     for _ in 0..31 {
         step_clock(Duration::from_secs(1)).await;
         served.frame(coinbase_heartbeat(10)).await;
     }
     served.frame(coinbase_match(11)).await;
-    step_clock(Duration::from_secs(1)).await;
-    served.frame(coinbase_heartbeat(11)).await;
     assert!(served.stop().await.1);
 }
 

@@ -754,13 +754,15 @@ impl SourceWorker {
             )?;
             return Err(Failure::Stopped);
         }
-        if priced
-            && let Some(retry) = &item.retry
-            && let Ok(mut retry) = retry.lock()
-            // Failure, close and drop revoke the fence before locking, so this credit stays in order with them.
-            && item.fence.current(item.generation)
-        {
-            retry.usable(Instant::now());
+        if priced && let Some(retry) = &item.retry {
+            // Stamped before the lock: waiting for it must not stretch the interval.
+            let accepted = Instant::now();
+            if let Ok(mut retry) = retry.lock()
+                // Failure, close and drop revoke the fence before locking, so this credit stays in order with them.
+                && item.fence.current(item.generation)
+            {
+                retry.usable(accepted);
+            }
         }
         Ok(())
     }

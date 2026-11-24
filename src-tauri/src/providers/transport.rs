@@ -178,14 +178,6 @@ impl Transport {
             .usable(now);
         Ok(())
     }
-    // Test accessor for a shared-state failure, as the connect and REST retry loops record one.
-    #[cfg(test)]
-    pub fn retry_failed(&self, provider: Provider) {
-        self.retries[provider.index()]
-            .lock()
-            .unwrap()
-            .delay(Failure::Transport);
-    }
     pub fn slow_retry(&self, provider: Provider) -> Result<bool, Failure> {
         Ok(self.retries[provider.index()]
             .lock()
@@ -1184,8 +1176,10 @@ mod failure_tests {
                 for _ in 0..5 {
                     state.delay(Failure::Transport);
                 }
-                state.usable(Instant::now());
             }
+            // A credit at the failure instant would be ignored; step so this one starts the interval.
+            tokio::time::advance(Duration::from_secs(1)).await;
+            retry.lock().unwrap().usable(Instant::now());
             let fence = Fence::new();
             let mut connection = Connection {
                 socket: None,

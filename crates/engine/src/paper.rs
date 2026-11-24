@@ -439,10 +439,22 @@ pub struct Reply {
 #[derive(Default)]
 pub(crate) struct Fence {
     pub paused: bool,
+    /// Kalshi loss admitted but not yet applied to source state; cleared by applying it,
+    /// Resume or a new run context, never by recovery. A user Pause stays in `paused`.
+    pub source_lost: bool,
     pub input_stopped: bool,
     pub quit: bool,
     pub stop_after_market: bool,
     pub generation: u64,
+    /// Test-only: stops dispatch after the intent commits, then again inside the marker lock.
+    #[cfg(test)]
+    pub dispatch_barrier: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+}
+impl Fence {
+    /// Every purchase gate and "paused" description reads both blocks.
+    pub fn purchases_blocked(&self) -> bool {
+        self.paused || self.source_lost
+    }
 }
 pub(crate) enum Job {
     Start(Start),
@@ -644,7 +656,7 @@ impl Owner {
                 created_context,
                 summary,
                 context,
-                effective_paused: f.paused || f.quit,
+                effective_paused: f.purchases_blocked() || f.quit,
                 effective_generation: f.generation,
                 completion_revision,
                 bindings: if include_bindings {
@@ -667,6 +679,7 @@ impl Owner {
                 "run_active",
                 "stopped_context",
                 "checking_purchase",
+                "stale_result",
             ]
             .contains(&error.code)
             && let Some(run) = self.run.as_mut().filter(|run| Some(run.id) == target)
@@ -851,11 +864,38 @@ impl Run {
             if supplied.is_some_and(|(stream, token)| token != self.sources.token(stream)) {
                 return Err(Failure::new("stopped_context"));
             }
+            // A late result for a scheduled market already retired describes nothing current.
+            let retired = |id: &str| {
+                self.start.markets.iter().any(|m| m.market_id == id)
+                    && !self.sources.market_ids().any(|retained| retained == id)
+            };
+            let stale = match &envelope.event {
+                sources::SourceEvent::Update { updates, .. } => {
+                    !updates.is_empty()
+                        && updates.iter().all(|u| match &u.binding.scope {
+                            strategy::BindingScope::Underlying => false,
+                            strategy::BindingScope::Market { market_id }
+                            | strategy::BindingScope::Contract { market_id, .. } => {
+                                retired(market_id)
+                            }
+                        })
+                }
+                sources::SourceEvent::Metadata { market_id, .. } => retired(market_id),
+                _ => false,
+            };
+            if stale {
+                return Err(Failure::new("stale_result"));
+            }
         }
         let canonical = input.canonical()?;
         let at = i64::try_from(input.virtual_ms).map_err(|_| Failure::new("range"))?;
+        let revokes = input.revokes(&self.context());
         let replayed = lock(store)?.paper_begin_input(self.id, input.ordinal, &canonical, at)?;
         if replayed.is_some() {
+            if revokes {
+                // The latest completed input already applied this loss to source state.
+                fence.lock().unwrap().source_lost = false;
+            }
             return Ok(());
         }
         // Monitoring continues while a purchase is checked: consult the venue before deciding.
@@ -921,6 +961,15 @@ impl Run {
             }) {
                 self.last_value_transaction = transaction.number;
             }
+            // Only an exact-opening boundary enters a market; a late promotion is display-only.
+            let entered = effect.batch.transactions.iter().find_map(|t| {
+                t.changes.iter().find_map(|c| match c {
+                    strategy::EvidenceChange::MarketBoundary { market_id } => {
+                        Some(market_id.clone())
+                    }
+                    _ => None,
+                })
+            });
             self.evaluator
                 .begin(effect.batch)
                 .map_err(|_| Failure::new("unavailable_evidence"))?;
@@ -988,11 +1037,11 @@ impl Run {
             if !self.participating && fence.lock().unwrap().stop_after_market {
                 self.open = false;
             }
-            if let Some(market) = self
-                .current_market
-                .as_ref()
-                .filter(|_| decision.phase == "Active" && self.open)
-            {
+            if let Some(market) = self.current_market.as_ref().filter(|market| {
+                decision.phase == "Active"
+                    && self.open
+                    && (self.participating || entered.as_ref() == Some(*market))
+            }) {
                 self.participating = true;
                 recorder.paper_decision(self.id, market, &decision)?;
                 recorder.paper_market_progress(
@@ -1016,7 +1065,7 @@ impl Run {
             }
             if self.open
                 && purchasable
-                && fence.lock().unwrap().paused
+                && fence.lock().unwrap().purchases_blocked()
                 && decision
                     .leaves
                     .iter()
@@ -1056,7 +1105,8 @@ impl Run {
                         .sources
                         .stamp(&dependencies)
                         .map_err(|_| Failure::new("unavailable_evidence"))?;
-                    if self.sources.is_current(&stamp) && !fence.lock().unwrap().paused {
+                    if self.sources.is_current(&stamp) && !fence.lock().unwrap().purchases_blocked()
+                    {
                         let intent = recorder.paper_intent(self.id, &candidate, book, at);
                         match intent {
                             Err(error)
@@ -1072,8 +1122,22 @@ impl Run {
                             Err(error) => return Err(error),
                             Ok(None) => {}
                             Ok(Some(attempt)) => {
+                                #[cfg(test)]
+                                let barrier = fence.lock().unwrap().dispatch_barrier.take();
+                                #[cfg(test)]
+                                let stop = || {
+                                    if let Some((entered, proceed)) = &barrier {
+                                        let _ = entered.send(());
+                                        let _ =
+                                            proceed.recv_timeout(std::time::Duration::from_secs(5));
+                                    }
+                                };
+                                #[cfg(test)]
+                                stop();
                                 let f = fence.lock().unwrap();
-                                if !f.paused && !f.quit && self.open {
+                                if !f.purchases_blocked() && !f.quit && self.open {
+                                    #[cfg(test)]
+                                    stop();
                                     // Pause and Quit wait for the marker: either they win, or the order is dispatched.
                                     let order = recorder.paper_dispatch(self.id, attempt, at)?;
                                     drop(f);
@@ -1122,12 +1186,16 @@ impl Run {
         {
             self.open = false;
         }
+        if revokes {
+            // Source state now blocks purchases itself until fresh verified evidence arrives.
+            fence.lock().unwrap().source_lost = false;
+        }
         if fence.lock().unwrap().input_stopped {
             self.open = false;
         }
         let state = if !self.open {
             "stopped"
-        } else if fence.lock().unwrap().paused {
+        } else if fence.lock().unwrap().purchases_blocked() {
             "paused"
         } else if self.participating {
             "active"
@@ -1205,6 +1273,10 @@ impl Input {
                 json!(["settlement", entry])
             }
             Payload::Book(book) => {
+                // A book from an older subscription is late, not malformed.
+                if book.source_generation < self.context.generation {
+                    return Err(Failure::new("stale_result"));
+                }
                 if book.accepted_ms > self.virtual_ms
                     || book.valid_until_ms <= book.accepted_ms
                     || book.source_generation != self.context.generation

@@ -399,9 +399,8 @@ fn public_engine_reconnect_never_regrants_a_spent_book() {
     // A new source generation re-initializes the same ask; no observation is newer.
     driver.reinitialize(61300, "80", "25");
     assert_ne!(driver.context.generation, generation);
-    engine
-        .paper_control(driver.context.run_id, Control::Resume)
-        .unwrap();
+    // Applying the loss lifted its block without a Resume; the spent book still never buys.
+    assert!(!engine.paper_effective().0);
     driver.input(
         61400,
         Payload::Book(driver.side_book(rules::Side::No, "25", 1, 61400, 4_000_000)),

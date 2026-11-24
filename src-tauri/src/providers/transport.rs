@@ -169,6 +169,7 @@ impl Transport {
             budget.data_messages,
         ])
     }
+    // Test accessor; production credits accepted prices in SourceWorker::process.
     #[cfg(test)]
     pub fn retry_usable(&self, provider: Provider, now: Instant) -> Result<(), Failure> {
         self.retries[provider.index()]
@@ -725,6 +726,7 @@ impl Transport {
                         );
                         item.source_tokens = Some(receipt_tokens);
                         item.progress = progress.clone();
+                        item.retry = Some(self.retries[provider.index()].clone());
                         if item.bytes.len() > MAX_BYTES {
                             return Err(Failure::Capacity);
                         }
@@ -1174,8 +1176,10 @@ mod failure_tests {
                 for _ in 0..5 {
                     state.delay(Failure::Transport);
                 }
-                state.usable(Instant::now());
             }
+            // A credit at the failure instant would be ignored; step so this one starts the interval.
+            tokio::time::advance(Duration::from_secs(1)).await;
+            retry.lock().unwrap().usable(Instant::now());
             let fence = Fence::new();
             let mut connection = Connection {
                 socket: None,

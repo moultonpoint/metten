@@ -364,6 +364,7 @@ impl SourceWorker {
         let enabled = self.enabled;
         let blocked = &mut self.blocked;
         let schedule = self.schedule.clone();
+        let mut accepted = None;
         let mut emit = |event| {
             if !item.fence.current(item.generation) {
                 return Err(Failure::Stopped);
@@ -631,7 +632,9 @@ impl SourceWorker {
             } else {
                 None
             };
-            apply_source_event(state, number, event, &tokens, clock, lease, &mut consume)?;
+            accepted =
+                apply_source_event(state, number, event, &tokens, clock, lease, &mut consume)?
+                    .or(accepted);
             if let Some(progress) = &item.progress {
                 progress.send_modify(|p| {
                     if let Some(stream) = acknowledged {
@@ -751,6 +754,13 @@ impl SourceWorker {
                     .map_err(|_| Failure::Unavailable)?,
             )?;
             return Err(Failure::Stopped);
+        }
+        if let (Some(accepted), Some(retry)) = (accepted, &item.retry)
+            && let Ok(mut retry) = retry.lock()
+            // Failure, close and drop revoke the fence before locking, so this credit stays in order with them.
+            && item.fence.current(item.generation)
+        {
+            retry.usable(accepted);
         }
         Ok(())
     }
@@ -1402,19 +1412,20 @@ fn apply_source_event(
     clock: metten_engine::sources::Clock,
     lease: Option<u64>,
     consume: &mut impl FnMut(metten_engine::sources::SourceEffect) -> Result<(), Failure>,
-) -> Result<(), Failure> {
+) -> Result<Option<Instant>, Failure> {
     use metten_engine::{
         sources::*,
         strategy::{BindingScope, Source},
     };
     let at = clock.at_ms;
     match event {
-        wire::Event::Heartbeat | wire::Event::ControlAcknowledged(_) => Ok(()),
+        wire::Event::Heartbeat | wire::Event::ControlAcknowledged(_) => Ok(None),
         wire::Event::Absent(stream) => consume(
             state
                 .invalidate(Scope::Stream(stream), Unavailable::Awaiting, at, None)
                 .map_err(|_| Failure::Protocol)?,
-        ),
+        )
+        .map(|()| None),
         wire::Event::Gap(..)
         | wire::Event::ControlRejected(..)
         | wire::Event::SubscriptionEnded(..)
@@ -1423,10 +1434,11 @@ fn apply_source_event(
             state
                 .invalidate(Scope::Market, Unavailable::MetadataChanged, at, None)
                 .map_err(|_| Failure::Protocol)?,
-        ),
+        )
+        .map(|()| None),
         wire::Event::Acknowledged(stream, _) => {
             if tokens[stream as usize] != state.token(stream) {
-                return Ok(());
+                return Ok(None);
             }
             consume(
                 state
@@ -1440,6 +1452,7 @@ fn apply_source_event(
                     ))
                     .map_err(|_| Failure::Protocol)?,
             )
+            .map(|()| None)
         }
         wire::Event::Prices(prices) => {
             if tokens[prices.stream as usize] != state.token(prices.stream) {
@@ -1498,8 +1511,9 @@ fn apply_source_event(
                     }
                 }
             }
+            let priced = updates.iter().any(|update| update.value.is_some());
             if updates.is_empty() {
-                return Ok(());
+                return Ok(None);
             }
             *number = number.checked_add(1).ok_or(Failure::Capacity)?;
             let mut envelope = source_envelope(
@@ -1514,7 +1528,11 @@ fn apply_source_event(
             envelope.clock = clock;
             envelope.provider_identity = Some(prices.identity);
             envelope.provider_time_utc = prices.time;
-            consume(state.apply(envelope).map_err(|_| Failure::Protocol)?)
+            let effect = state.apply(envelope).map_err(|_| Failure::Protocol)?;
+            // Stamped at engine acceptance: later frame handling or the retry lock must not stretch or reorder it.
+            let accepted = priced.then(Instant::now);
+            consume(effect)?;
+            Ok(accepted)
         }
     }
 }

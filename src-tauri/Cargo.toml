@@ -18,7 +18,7 @@ futures-util = { version = "0.3.32", features = ["sink"] }
 ed25519-dalek = { version = "=2.2.0", features = ["pem"] }
 rsa = { version = "=0.9.10", features = ["sha2", "getrandom"] }
 sha2 = "0.10.9"
-base64 = "0.22.1"
+base64 = "0.23.1"
 
 [dev-dependencies]
 tokio = { version = "=1.54.1", features = ["test-util", "rt-multi-thread"] }

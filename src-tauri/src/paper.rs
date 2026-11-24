@@ -939,6 +939,71 @@ mod tests {
     }
 
     #[test]
+    fn playback_silence_expires_quotes_passes_the_deadline_and_closes_without_new_quotes() {
+        let workspace = Workspace::new();
+        let engine = Arc::new(Engine::open(workspace.0.join("session.sqlite")).unwrap());
+        let text = include_str!("../../examples/learning.json");
+        let metten_engine::StrategyResponse::Saved { version } = engine
+            .strategies(metten_engine::StrategyRequest::Save {
+                json: text.into(),
+                reviewed_json: text.into(),
+            })
+            .unwrap()
+        else {
+            panic!("save failed")
+        };
+        // The qualifying NO 25 quote arrives at 40000 and expires at 50000, before the purchase
+        // window opens at 61000; after it the feed is silent and nothing settles.
+        let mut scenario: Value = serde_json::from_str(SCENARIO).unwrap();
+        scenario["observations"][2]["at_ms"] = json!(40000);
+        scenario["observations"][2]["valid_until_ms"] = json!(50000);
+        scenario["settlements"] = json!([]);
+        let scenario = Scenario::parse(&scenario.to_string()).unwrap();
+        let settings = Settings {
+            quantity: 10,
+            minimum_price: strategy::Decimal::parse("0").unwrap(),
+            maximum_price: strategy::Decimal::parse("100").unwrap(),
+            starting_balance: 100 * DOLLAR,
+        };
+        let start = scenario
+            .start(
+                "00000000-0000-4000-8000-000000000001".into(),
+                version.id.parse().unwrap(),
+                settings,
+                1795046400000,
+            )
+            .unwrap();
+        let reply = engine.paper_start(start).unwrap();
+        let run = positive_id(&reply.summary.run_id).unwrap();
+        let mut driver = Driver::new(
+            engine.clone(),
+            reply.context.unwrap(),
+            reply.bindings.clone(),
+            reply.summary.clone(),
+            scenario,
+        );
+        let stop = AtomicBool::new(false);
+        driver.prepare(&stop).unwrap();
+        // The same one-second synthetic ticks the playback thread submits.
+        let mut at = 0;
+        while driver.summary.control_state != "stopped" {
+            at += 1000;
+            driver.advance(at, &stop).unwrap();
+            if at == 121000 {
+                assert_eq!(driver.summary.control_state, "active");
+            }
+        }
+        assert_eq!(at, 901000);
+        assert_eq!(driver.summary.virtual_frontier_ms, "901000");
+        assert_eq!(driver.summary.cash, "10000000000");
+        let markets = engine.paper_history(Some(run), None).unwrap().markets;
+        assert_eq!(markets.len(), 1);
+        assert_eq!(markets[0].source_market_id, "KXBTC15M-PAPER-NEXT");
+        assert_eq!(markets[0].attempt_count, "0");
+        assert!(markets[0].settled_net.is_none());
+    }
+
+    #[test]
     fn completed_playback_does_not_cancel_the_next_run() {
         let workspace = Workspace::new();
         let engine = Arc::new(Engine::open(workspace.0.join("session.sqlite")).unwrap());

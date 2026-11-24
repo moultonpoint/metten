@@ -371,6 +371,72 @@ fn recovery_keeps_newer_pause_and_stop_and_resume_waits_for_the_check() {
     assert!(engine.paper_effective().1);
 }
 
+#[test]
+fn unconfirmed_partial_retry_through_a_reconnect_is_never_resent_then_completes_the_remainder() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paper.sqlite");
+    let probe = Probe::default();
+    let engine = probe.open(&path);
+    let mut driver = Driver::start(&engine);
+    let run = driver.context.run_id;
+    partial_then_uncertain_retry(&mut driver, &probe);
+    // The Kalshi feed drops and returns while the 6-contract retry is unconfirmed.
+    for (at, state) in [
+        (62100, src::Connection::Disconnected),
+        (62200, src::Connection::Open),
+    ] {
+        driver.source(
+            at,
+            src::SourceEvent::Connection {
+                provider: src::Provider::Kalshi,
+                token: driver.context.book_token,
+                state,
+            },
+        );
+    }
+    driver.reinitialize(62300, "80", "25");
+    driver.source(
+        62300,
+        src::SourceEvent::Metadata {
+            token: driver.context.metadata_token,
+            market_id: "KXBTC15M-PAPER-NEXT".into(),
+            verified: true,
+        },
+    );
+    // Fresh qualifying evidence and liquidity: still nothing is sent while the outcome is unknown.
+    driver.observe(63000, 3, "80", "25");
+    driver.input(
+        63000,
+        Payload::Book(driver.side_book(rules::Side::No, "25", 3, 63000, 100_000_000)),
+    );
+    assert_eq!(probe.sends(), 2);
+    assert_eq!(receipt(&engine, run).reason, "checking_purchase");
+    probe.plan(|p| {
+        p.lose_replies = false;
+        p.hide_records = false;
+    });
+    // The next input confirms 3 of 6 (7 held) and, without any Resume, its unspent fresh book
+    // buys exactly the 3 still unfilled.
+    driver.input(63500, Payload::Advance);
+    assert_eq!(
+        attempts(&path),
+        vec![
+            ("partial".into(), 10, 4),
+            ("partial".into(), 6, 3),
+            ("full".into(), 3, 3)
+        ]
+    );
+    assert_eq!(probe.sends(), 3);
+    assert!(!engine.paper_effective().0);
+    // The objective is complete: later eligible liquidity is never a second purchase.
+    driver.observe(64000, 4, "80", "25");
+    driver.input(
+        64000,
+        Payload::Book(driver.side_book(rules::Side::No, "25", 4, 64000, 100_000_000)),
+    );
+    assert_eq!(probe.sends(), 3);
+}
+
 /// Child process body: one purchase with the configured exit, then an abrupt exit.
 #[test]
 fn recovery_child() {

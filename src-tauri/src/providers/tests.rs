@@ -1811,166 +1811,210 @@ async fn owned_service_preserves_partial_receive_during_control_and_stops() {
     assert!(!fence.current(fence.token()));
 }
 
-#[test]
-fn real_book_decoder_drives_learning_strategy_without_changing_its_rules() {
-    use metten_engine::{sources::*, strategy::*};
-    fn complete(e: &mut Evaluator, effect: SourceEffect) -> Decision {
-        e.begin(effect.batch).unwrap();
-        loop {
-            let range = PriceRange {
-                minimum: Decimal::parse("1").unwrap(),
-                maximum: Decimal::parse("99").unwrap(),
+/// The learning strategy behind the real Kalshi book decoder and source worker, subscribed.
+struct LearningSeam {
+    worker: SourceWorker,
+    evaluator: metten_engine::strategy::Evaluator,
+    fence: Fence,
+    memory: memory::Memory,
+    market: metten_engine::strategy::MarketDescriptor,
+}
+fn complete_learning(
+    e: &mut metten_engine::strategy::Evaluator,
+    effect: metten_engine::sources::SourceEffect,
+) -> metten_engine::strategy::Decision {
+    use metten_engine::strategy::*;
+    e.begin(effect.batch).unwrap();
+    loop {
+        let range = PriceRange {
+            minimum: Decimal::parse("1").unwrap(),
+            maximum: Decimal::parse("99").unwrap(),
+        };
+        let objective = ObjectiveView {
+            market_id: "KXBTC15M-M".into(),
+            requested_quantity: 1,
+            confirmed_quantity: 0,
+            locked_side: None,
+            attempt_state: AttemptState::None,
+            safeguards: Safeguards {
+                allowed: true,
+                yes: range.clone(),
+                no: range,
+            },
+        };
+        match e.process_slice(SliceControl::Continue, Some(objective)) {
+            SliceResult::Pending { .. } => (),
+            SliceResult::Complete(d) => return d,
+            other => panic!("{other:?}"),
+        }
+    }
+}
+impl LearningSeam {
+    fn new() -> Self {
+        use metten_engine::{sources::*, strategy::*};
+        let strategy =
+            ValidatedStrategy::parse(include_str!("../../../examples/learning.json")).unwrap();
+        let market = MarketDescriptor {
+            series_id: "KXBTC15M".into(),
+            market_id: "KXBTC15M-M".into(),
+            contract_id: "contract-m".into(),
+            open_ms: 1,
+            close_ms: 900001,
+        };
+        let mut bindings = Vec::new();
+        for r in strategy.source_requirements() {
+            let sides = match r.side {
+                Some(SourceSide::Selected) => vec![Side::Yes, Side::No],
+                Some(SourceSide::Fixed(s)) => vec![s],
+                None => panic!("ask fixture"),
             };
-            let objective = ObjectiveView {
-                market_id: "KXBTC15M-M".into(),
-                requested_quantity: 1,
-                confirmed_quantity: 0,
-                locked_side: None,
-                attempt_state: AttemptState::None,
-                safeguards: Safeguards {
-                    allowed: true,
-                    yes: range.clone(),
-                    no: range,
-                },
-            };
-            match e.process_slice(SliceControl::Continue, Some(objective)) {
-                SliceResult::Pending { .. } => (),
-                SliceResult::Complete(d) => return d,
-                other => panic!("{other:?}"),
+            for side in sides {
+                bindings.push(BindingDescriptor {
+                    binding_id: bindings.len() as u32 + 1,
+                    input_id: r.input_id.clone(),
+                    scope: BindingScope::Contract {
+                        market_id: market.market_id.clone(),
+                        contract_id: market.contract_id.clone(),
+                        side,
+                    },
+                })
             }
         }
-    }
-    let strategy =
-        ValidatedStrategy::parse(include_str!("../../../examples/learning.json")).unwrap();
-    let market = MarketDescriptor {
-        series_id: "KXBTC15M".into(),
-        market_id: "KXBTC15M-M".into(),
-        contract_id: "contract-m".into(),
-        open_ms: 1,
-        close_ms: 900001,
-    };
-    let mut bindings = Vec::new();
-    for r in strategy.source_requirements() {
-        let sides = match r.side {
-            Some(SourceSide::Selected) => vec![Side::Yes, Side::No],
-            Some(SourceSide::Fixed(s)) => vec![s],
-            None => panic!("ask fixture"),
-        };
-        for side in sides {
-            bindings.push(BindingDescriptor {
-                binding_id: bindings.len() as u32 + 1,
-                input_id: r.input_id.clone(),
-                scope: BindingScope::Contract {
-                    market_id: market.market_id.clone(),
-                    contract_id: market.contract_id.clone(),
-                    side,
-                },
+        let caps: Vec<_> = bindings
+            .iter()
+            .map(|b| {
+                (
+                    b.binding_id,
+                    Capabilities {
+                        current: None,
+                        observations: None,
+                        history: None,
+                    },
+                )
             })
-        }
-    }
-    let caps: Vec<_> = bindings
-        .iter()
-        .map(|b| {
-            (
-                b.binding_id,
-                Capabilities {
-                    current: None,
-                    observations: None,
-                    history: None,
-                },
-            )
-        })
-        .collect();
-    let source =
-        SourceState::new(&strategy, std::slice::from_ref(&market), &bindings, &caps).unwrap();
-    let mut e = Evaluator::new(
-        strategy,
-        RunContext {
-            strategy_version: "learning".into(),
-            run_id: "controlled".into(),
-            go_time: "2026-11-16T00:00:00Z".into(),
-            series_id: "KXBTC15M".into(),
-            markets: vec![market.clone()],
-            bindings,
-        },
-    )
-    .unwrap();
-    let memory = memory::Memory::default();
-    let mut worker = SourceWorker::new(source, memory.clone()).unwrap();
-    worker.lease = Some(1_000_000);
-    let connection = worker
-        .connection(
-            super::Provider::Kalshi,
-            worker.state.token(Stream::Book),
-            Connection::Open,
-            0,
+            .collect();
+        let source =
+            SourceState::new(&strategy, std::slice::from_ref(&market), &bindings, &caps).unwrap();
+        let mut evaluator = Evaluator::new(
+            strategy,
+            RunContext {
+                strategy_version: "learning".into(),
+                run_id: "controlled".into(),
+                go_time: "2026-11-16T00:00:00Z".into(),
+                series_id: "KXBTC15M".into(),
+                markets: vec![market.clone()],
+                bindings,
+            },
         )
         .unwrap();
-    complete(&mut e, connection);
-    let fence = Fence::new();
-    let mut ack = Intake::new(
-        super::Provider::Kalshi,
-        &fence,
-        memory
-            .copy(br#"{"type":"subscribed","msg":{"sid":1,"channel":"orderbook_delta"}}"#)
-            .unwrap(),
-        Instant::now(),
-    );
-    ack.source_tokens = Some(worker.tokens());
-    ack.receipt_ms = Some(0);
-    worker
-        .process(ack, 0, e.snapshot().evaluated_through_ms, |effect| {
-            complete(&mut e, effect);
-            Ok(())
-        })
-        .unwrap();
-    let feed = |worker: &mut SourceWorker, e: &mut Evaluator, seq: u64, at: u64, yes: &str| {
-        let no = if yes == "0.75" { "0.25" } else { "0.64" };
+        let memory = memory::Memory::default();
+        let mut worker = SourceWorker::new(source, memory.clone()).unwrap();
+        worker.lease = Some(1_000_000);
+        let connection = worker
+            .connection(
+                super::Provider::Kalshi,
+                worker.state.token(Stream::Book),
+                Connection::Open,
+                0,
+            )
+            .unwrap();
+        complete_learning(&mut evaluator, connection);
+        let fence = Fence::new();
+        let mut ack = Intake::new(
+            super::Provider::Kalshi,
+            &fence,
+            memory
+                .copy(br#"{"type":"subscribed","msg":{"sid":1,"channel":"orderbook_delta"}}"#)
+                .unwrap(),
+            Instant::now(),
+        );
+        ack.source_tokens = Some(worker.tokens());
+        ack.receipt_ms = Some(0);
+        worker
+            .process(
+                ack,
+                0,
+                evaluator.snapshot().evaluated_through_ms,
+                |effect| {
+                    complete_learning(&mut evaluator, effect);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        Self {
+            worker,
+            evaluator,
+            fence,
+            memory,
+            market,
+        }
+    }
+    /// One real orderbook snapshot frame: best YES and NO bids in dollars.
+    fn feed(
+        &mut self,
+        seq: u64,
+        at: u64,
+        yes: &str,
+        no: &str,
+    ) -> metten_engine::strategy::Decision {
         let bytes = format!(
             r#"{{"type":"orderbook_snapshot","sid":1,"seq":{seq},"msg":{{"market_ticker":"KXBTC15M-M","yes_dollars_fp":[["{yes}","2"]],"no_dollars_fp":[["{no}","3"]]}}}}"#
         );
         let mut item = Intake::new(
             super::Provider::Kalshi,
-            &fence,
-            memory.copy(bytes.as_bytes()).unwrap(),
+            &self.fence,
+            self.memory.copy(bytes.as_bytes()).unwrap(),
             Instant::now(),
         );
-        item.source_tokens = Some(worker.tokens());
+        item.source_tokens = Some(self.worker.tokens());
         item.receipt_ms = Some(at);
+        let evaluator = &mut self.evaluator;
         let mut result = None;
-        worker
-            .process(item, at, e.snapshot().evaluated_through_ms, |effect| {
-                result = Some(complete(e, effect));
-                Ok(())
-            })
+        self.worker
+            .process(
+                item,
+                at,
+                evaluator.snapshot().evaluated_through_ms,
+                |effect| {
+                    result = Some(complete_learning(evaluator, effect));
+                    Ok(())
+                },
+            )
             .unwrap();
         result.unwrap()
-    };
-    feed(&mut worker, &mut e, 1, 0, "0.36");
-    let effect = worker
-        .state
-        .apply(source_envelope(
+    }
+    fn apply(
+        &mut self,
+        at: u64,
+        event: metten_engine::sources::SourceEvent,
+    ) -> metten_engine::strategy::Decision {
+        let effect = self.worker.state.apply(source_envelope(at, event)).unwrap();
+        complete_learning(&mut self.evaluator, effect)
+    }
+    /// Verifies the market's metadata and enters it at its exact opening.
+    fn enter(&mut self) -> metten_engine::strategy::Decision {
+        use metten_engine::sources::{SourceEvent, Stream};
+        let market_id = self.market.market_id.clone();
+        self.apply(
             0,
             SourceEvent::Metadata {
-                token: worker.state.token(Stream::Metadata),
-                market_id: market.market_id.clone(),
+                token: self.worker.state.token(Stream::Metadata),
+                market_id: market_id.clone(),
                 verified: true,
             },
-        ))
-        .unwrap();
-    complete(&mut e, effect);
-    let effect = worker
-        .state
-        .apply(source_envelope(
-            1,
-            SourceEvent::Boundary {
-                market_id: market.market_id.clone(),
-            },
-        ))
-        .unwrap();
-    let first = complete(&mut e, effect);
+        );
+        self.apply(1, SourceEvent::Boundary { market_id })
+    }
+}
+
+#[test]
+fn real_book_decoder_drives_learning_strategy_without_changing_its_rules() {
+    use metten_engine::strategy::*;
+    let mut seam = LearningSeam::new();
+    seam.feed(1, 0, "0.36", "0.64");
+    let first = seam.enter();
     assert!(first.checkpoints.contains_key("early_side_checkpoint"));
-    let later = feed(&mut worker, &mut e, 2, 60001, "0.75");
+    let later = seam.feed(2, 60001, "0.75", "0.25");
     assert_eq!(
         later.checkpoints["early_side_checkpoint"].side,
         Some(Side::Yes)
@@ -1982,19 +2026,76 @@ fn real_book_decoder_drives_learning_strategy_without_changing_its_rules() {
             .any(|l| l.option_id == "opposite_side_first" && l.eligible)
     );
     assert_eq!(later.candidate.as_ref().unwrap().side, Side::No);
-    let old = worker.tokens();
-    fence.revoke();
+    let old = seam.worker.tokens();
+    seam.fence.revoke();
     let mut stale = Intake::new(
         super::Provider::Kalshi,
-        &fence,
-        memory.copy(b"{}").unwrap(),
+        &seam.fence,
+        seam.memory.copy(b"{}").unwrap(),
         Instant::now(),
     );
     stale.source_tokens = Some(old);
     assert_eq!(
-        worker.process(stale, 60002, e.snapshot().evaluated_through_ms, |_| Ok(())),
+        seam.worker.process(
+            stale,
+            60002,
+            seam.evaluator.snapshot().evaluated_through_ms,
+            |_| Ok(())
+        ),
         Err(Failure::Stopped)
     );
+}
+
+#[test]
+fn decoder_burst_latches_a_transient_crossing_and_kalshi_loss_blocks_the_candidate() {
+    use metten_engine::{sources::*, strategy::*};
+    for lost in [false, true] {
+        let mut seam = LearningSeam::new();
+        // YES ask 0.45: no checkpoint at entry.
+        seam.feed(1, 0, "0.45", "0.55");
+        assert!(
+            !seam
+                .enter()
+                .checkpoints
+                .contains_key("early_side_checkpoint")
+        );
+        // Three frames in one millisecond; only the middle one has a YES ask below 0.40.
+        seam.feed(2, 30000, "0.45", "0.55");
+        let crossing = seam.feed(3, 30000, "0.36", "0.64");
+        let burst = seam.feed(4, 30000, "0.75", "0.25");
+        let latch = &burst.checkpoints["early_side_checkpoint"];
+        assert_eq!(latch.side, Some(Side::Yes));
+        assert_eq!(
+            (latch.at_ms, latch.transaction),
+            (
+                30000,
+                crossing.checkpoints["early_side_checkpoint"].transaction
+            )
+        );
+        if lost {
+            let token = seam.worker.state.token(Stream::Book);
+            let effect = seam
+                .worker
+                .connection(
+                    super::Provider::Kalshi,
+                    token,
+                    Connection::Disconnected,
+                    40000,
+                )
+                .unwrap();
+            complete_learning(&mut seam.evaluator, effect);
+        }
+        // In the purchase window the last NO ask (0.25) qualifies only if the feed survived.
+        let decision = seam.apply(60001, SourceEvent::Advance);
+        assert_eq!(
+            decision.checkpoints["early_side_checkpoint"].side,
+            Some(Side::Yes)
+        );
+        assert_eq!(
+            decision.candidate.map(|c| c.side),
+            (!lost).then_some(Side::No)
+        );
+    }
 }
 
 #[tokio::test]

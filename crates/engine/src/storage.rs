@@ -6,7 +6,16 @@ use std::{fs::File, path::Path, time::Duration};
 
 pub(crate) struct Recorder {
     connection: Connection,
-    _lock: File,
+    _lock: WorkspaceLock,
+}
+
+struct WorkspaceLock(File);
+
+impl Drop for WorkspaceLock {
+    fn drop(&mut self) {
+        // The connection drops first. Explicit unlock also releases the lock if a child still holds a duplicate descriptor.
+        let _ = self.0.unlock();
+    }
 }
 
 impl Recorder {
@@ -21,6 +30,7 @@ impl Recorder {
         lock.try_lock().map_err(|_| {
             "This workspace is already open. Close the other Metten window and reopen.".to_string()
         })?;
+        let lock = WorkspaceLock(lock);
         let connection = Connection::open(path).map_err(|e| e.to_string())?;
         connection
             .busy_timeout(Duration::from_millis(250))
@@ -1740,6 +1750,22 @@ impl Recorder {
 mod paper_transaction_tests {
     use super::*;
     use crate::{paper::*, strategy::*};
+
+    #[test]
+    fn dropping_the_recorder_releases_the_lock_even_with_a_duplicate_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("workspace.sqlite");
+        let (recorder, _) = Recorder::open(&path).unwrap();
+        let inherited = recorder._lock.0.try_clone().unwrap();
+        assert!(Recorder::open(&path).is_err());
+        drop(recorder);
+
+        let (reopened, _) = Recorder::open(&path).unwrap();
+        drop(inherited);
+        assert!(Recorder::open(&path).is_err());
+        drop(reopened);
+        assert!(Recorder::open(&path).is_ok());
+    }
 
     #[test]
     fn paper_venue_waits_longer_for_the_write_lock_than_the_recorder() {

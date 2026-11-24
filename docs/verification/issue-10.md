@@ -30,6 +30,10 @@ The final remote query at 2026-11-24 06:40 UTC returned the same published `main
 | `python3 tests/paper-runner.test.py` | Seven passed. |
 | `npm run tauri build -- --bundles app` and `python3 scripts/verify-paper.py target/release/bundle/macos/Metten.app` | Passed on the freshly built Mac bundle. The runner verified native command responses and persisted receipts after the process exited. |
 
+## Workspace reopen regression
+
+The branch-push Foundation run failed twice when the recovery suite reopened a workspace. The recorder lock remained held after shutdown. A focused test reproduced the same refusal while keeping a duplicate lock descriptor open. The test passed when the recorder explicitly released its lock after closing SQLite. While the recorder is open, the test still rejects a second owner. [Hosted recovery failures](https://github.com/moultonpoint/metten/actions/runs/45346237461)
+
 ## Proof limits
 
 The workspace-wide live path in these checks uses controlled input inside the engine crate. The packaged app uses synthetic paper inputs. The fixed desktop example ends after its prepared schedule, so the engine tests exercise next-day resumption. Real Kalshi funding, fees, settlement identity, and execution need the integration in [#12](https://github.com/moultonpoint/metten/issues/12). Qualification belongs to [#11](https://github.com/moultonpoint/metten/issues/11). The packaged check runs without a WebView and the frontend tests use a controlled document. GUI behavior remains unverified.

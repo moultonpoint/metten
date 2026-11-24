@@ -152,7 +152,9 @@ impl<'a> Driver<'a> {
             },
         );
     }
-    pub(super) fn prepare(&mut self) {
+    /// Connects, verifies both markets, initializes their asks and enters NEXT at its exact
+    /// opening (1000), latching the YES side.
+    pub(super) fn enter(&mut self) {
         self.source(
             0,
             src::SourceEvent::Connection {
@@ -178,6 +180,10 @@ impl<'a> Driver<'a> {
                 market_id: "KXBTC15M-PAPER-NEXT".into(),
             },
         );
+    }
+    /// `enter`, then a qualifying opposite-side (NO 25) ask at 61000.
+    pub(super) fn prepare(&mut self) {
+        self.enter();
         self.update(61000, false);
     }
     /// A new observation of both next-market asks.

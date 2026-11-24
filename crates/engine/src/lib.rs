@@ -233,6 +233,9 @@ struct Shared {
     paper_run_id: Option<i64>,
     paper_summary: Option<paper::RunSummary>,
     paper_context: Option<paper::InputContext>,
+    /// Published with `paper_context`: retired scheduled markets, so admission can tell a late
+    /// result from a source loss without locking the run.
+    paper_retired: Vec<String>,
     #[cfg(test)]
     pause_recording_barrier: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
     #[cfg(test)]
@@ -324,6 +327,7 @@ impl Engine {
             paper_run_id: initial_paper.as_ref().and_then(|r| r.run_id.parse().ok()),
             paper_summary: initial_paper,
             paper_context: None,
+            paper_retired: Vec::new(),
             #[cfg(test)]
             pause_recording_barrier: None,
             #[cfg(test)]
@@ -363,6 +367,7 @@ impl Engine {
                                 && (!fence.input_stopped || created_context)
                             {
                                 fence.paused = false;
+                                fence.source_losses = 0;
                                 if created_context {
                                     fence.stop_after_market = false;
                                     fence.input_stopped = false;
@@ -399,7 +404,7 @@ impl Engine {
                             }
                             if let Ok(reply) = &mut result {
                                 let fence = worker_fence.lock().unwrap();
-                                reply.effective_paused = fence.paused || fence.quit;
+                                reply.effective_paused = fence.purchases_blocked() || fence.quit;
                                 reply.effective_generation = fence.generation;
                             }
                             shared.paper_busy = false;
@@ -413,6 +418,7 @@ impl Engine {
                                     && reply.summary.run_id == summary.run_id
                                 {
                                     shared.paper_context = reply.context;
+                                    shared.paper_retired = reply.retired.clone();
                                 }
                                 shared.paper_summary = Some(summary);
                             }
@@ -618,7 +624,7 @@ impl Engine {
         self.paper_job(paper::Job::Start(start), None)
     }
     pub fn paper_input(&self, input: paper::Input) -> Result<paper::Reply, paper::Failure> {
-        self.paper_job(paper::Job::Input(Box::new(input)), None)
+        self.paper_job(paper::Job::Input(Box::new(input), false), None)
     }
     pub fn paper_context(&self, run: i64) -> Result<paper::InputContext, paper::Failure> {
         self.paper_job(paper::Job::Context(run), None)?
@@ -681,7 +687,7 @@ impl Engine {
     pub fn paper_effective(&self) -> (bool, bool, u64) {
         let fence = self.paper_fence.lock().unwrap();
         (
-            fence.paused || fence.quit,
+            fence.purchases_blocked() || fence.quit,
             fence.stop_after_market,
             fence.generation,
         )
@@ -733,7 +739,7 @@ impl Engine {
 
     fn paper_job(
         &self,
-        job: paper::Job,
+        mut job: paper::Job,
         admitted_generation: Option<u64>,
     ) -> Result<paper::Reply, paper::Failure> {
         let (reply, result) = mpsc::channel();
@@ -742,18 +748,21 @@ impl Engine {
             if state.stop_requested || self.paper_fence.lock().unwrap().quit {
                 return Err(paper::Failure::new("stopped_context"));
             }
-            let revocation = matches!(&job, paper::Job::Input(input)
-                if state.paper_context.as_ref().is_some_and(|current| input.revokes(current)));
+            let revocation = matches!(&job, paper::Job::Input(input, _)
+                if state.paper_context.as_ref().is_some_and(|current| input.revokes(current, &state.paper_retired)));
+            if let paper::Job::Input(_, loss) = &mut job {
+                *loss = revocation;
+            }
             if revocation {
                 let mut fence = self.paper_fence.lock().unwrap();
-                fence.paused = true;
+                fence.source_losses = fence.source_losses.saturating_add(1);
                 fence.generation = fence.generation.saturating_add(1);
                 fence.input_stopped |= state.paper_busy;
             }
             if state.paper_busy {
                 return Err(paper::Failure::new("busy"));
             }
-            if let paper::Job::Input(input) = &job {
+            if let paper::Job::Input(input, _) = &job {
                 input.canonical()?;
             }
             if let paper::Job::Start(start) = &job {
@@ -1184,6 +1193,10 @@ mod tests {
                 }
                 assert_eq!(engine.paper_input(input).unwrap_err().code, "busy");
                 assert!(engine.paper_effective().0);
+                // Source loss blocks through its own flag, never by imitating a user Pause.
+                let fence = engine.paper_fence.lock().unwrap();
+                assert!(fence.source_losses == 1 && fence.input_stopped && !fence.paused);
+                drop(fence);
             } else {
                 engine
                     .fence_paper_control(context.run_id, Control::Pause)
@@ -1203,6 +1216,209 @@ mod tests {
             assert_eq!(
                 summary.control_state,
                 if revocation { "stopped" } else { "paused" }
+            );
+            let db = rusqlite::Connection::open(&path).unwrap();
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM paper_attempts", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+    }
+    fn kalshi_loss(context: InputContext, ordinal: i64, at: u64) -> Input {
+        source_input(
+            context,
+            ordinal,
+            at,
+            src::SourceEvent::Connection {
+                provider: src::Provider::Kalshi,
+                token: context.book_token,
+                state: src::Connection::Disconnected,
+            },
+        )
+    }
+    fn source_input(
+        context: InputContext,
+        ordinal: i64,
+        at: u64,
+        event: src::SourceEvent,
+    ) -> Input {
+        Input {
+            context,
+            ordinal,
+            virtual_ms: at,
+            payload: Payload::Source(src::Envelope {
+                clock: src::Clock {
+                    at_ms: at,
+                    receipt_ms: at,
+                    received_through_ms: at,
+                    completed_frontier_ms: at,
+                },
+                provider_identity: None,
+                provider_time_utc: None,
+                event,
+            }),
+        }
+    }
+    #[test]
+    fn pause_or_loss_during_a_long_jump_and_a_slow_dispatch_marker_is_serialized_with_dispatch() {
+        for arm in ["pause", "loss", "marker"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("paper.sqlite");
+            let engine = Arc::new(Engine::open(&path).unwrap());
+            let mut driver = Driver::start(&engine);
+            let run = driver.context.run_id;
+            driver.enter();
+            // A qualifying ask and its book before the purchase window; then one 60 s jump.
+            driver.observe(30000, 1, "80", "25");
+            driver.input(
+                30000,
+                Payload::Book(driver.side_book(rules::Side::No, "25", 1, 30000, 10_000_000)),
+            );
+            let (entered, at_stop) = mpsc::channel();
+            let (resume, proceed) = mpsc::channel();
+            engine.paper_fence.lock().unwrap().dispatch_barrier = Some((entered, proceed));
+            let jump = Input {
+                context: driver.context,
+                ordinal: driver.ordinal + 1,
+                virtual_ms: 90000,
+                payload: Payload::Advance,
+            };
+            let worker = engine.clone();
+            let jump = thread::spawn(move || worker.paper_input(jump));
+            // The jump's intent is committed; its dispatch marker is not.
+            at_stop.recv_timeout(Duration::from_secs(5)).unwrap();
+            let pause = if arm == "pause" {
+                // Pause is admitted at once while the jump is still in flight.
+                engine.fence_paper_control(run, Control::Pause).unwrap();
+                resume.send(()).unwrap();
+                None
+            } else if arm == "loss" {
+                // A Kalshi loss is admitted between intent and marker (the worker is busy).
+                let loss = kalshi_loss(driver.context, driver.ordinal + 2, 90000);
+                assert_eq!(engine.paper_input(loss).unwrap_err().code, "busy");
+                resume.send(()).unwrap();
+                None
+            } else {
+                resume.send(()).unwrap();
+                // The worker now holds the fence while the marker is (slowly) recorded.
+                at_stop.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(engine.paper_fence.try_lock().is_err());
+                let worker = engine.clone();
+                let (done, finished) = mpsc::channel();
+                let pause = thread::spawn(move || {
+                    let result = worker.fence_paper_control(run, Control::Pause);
+                    let _ = done.send(());
+                    result
+                });
+                // Pause holds the session lock while it waits for the fence: it cannot overtake.
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while engine.shared.try_lock().is_ok() {
+                    assert!(std::time::Instant::now() < deadline, "Pause never waited");
+                    thread::yield_now();
+                }
+                assert!(finished.try_recv().is_err());
+                resume.send(()).unwrap();
+                Some(pause)
+            };
+            let reply = jump.join().unwrap().unwrap();
+            if let Some(pause) = pause {
+                pause.join().unwrap().unwrap();
+            }
+            assert!(engine.paper_effective().0);
+            let db = rusqlite::Connection::open(&path).unwrap();
+            let outcome = || {
+                db.query_row(
+                    "SELECT (SELECT group_concat(state) FROM paper_attempts),(SELECT count(*) FROM paper_venue_orders)",
+                    [],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                )
+                .unwrap()
+            };
+            if arm == "marker" {
+                assert_eq!(outcome(), ("full".into(), 1));
+                assert_eq!(reply.summary.cash, "9736870000");
+            } else {
+                assert_eq!(outcome(), ("canceled".into(), 0));
+                assert_eq!(reply.summary.cash, "10000000000");
+            }
+            assert_eq!(reply.summary.reserved, "0");
+            if arm == "loss" {
+                // Known limit: a loss admitted while busy stops the run.
+                assert_eq!(reply.summary.control_state, "stopped");
+                continue;
+            }
+            // A later qualifying observation sends nothing while paused.
+            driver.ordinal += 1;
+            driver.context = reply.context.unwrap();
+            driver.summary = reply.summary;
+            let before = outcome();
+            driver.observe(91000, 2, "80", "25");
+            driver.input(
+                91000,
+                Payload::Book(driver.side_book(rules::Side::No, "25", 2, 91000, 10_000_000)),
+            );
+            assert_eq!(outcome(), before);
+        }
+    }
+    #[test]
+    fn feed_loss_while_a_user_request_is_in_flight_stops_the_run_but_a_stale_result_does_not() {
+        for stale in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("paper.sqlite");
+            let engine = Arc::new(Engine::open(&path).unwrap());
+            let mut driver = Driver::start(&engine);
+            let run = driver.context.run_id;
+            driver.prepare();
+            let (entered, waiting) = mpsc::channel();
+            let (resume, proceed) = mpsc::channel();
+            engine.shared.lock().unwrap().paper_publication_barrier = Some((entered, proceed));
+            let worker = engine.clone();
+            let pause = thread::spawn(move || worker.paper_control(run, Control::Pause));
+            waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+            let late = if stale {
+                // CURRENT closed at 1000 and was retired: this is a late result, not a loss.
+                source_input(
+                    driver.context,
+                    driver.ordinal + 1,
+                    61000,
+                    src::SourceEvent::Metadata {
+                        token: driver.context.metadata_token,
+                        market_id: "KXBTC15M-PAPER-CURRENT".into(),
+                        verified: false,
+                    },
+                )
+            } else {
+                kalshi_loss(driver.context, driver.ordinal + 1, 61000)
+            };
+            assert_eq!(engine.paper_input(late).unwrap_err().code, "busy");
+            resume.send(()).unwrap();
+            let reply = pause.join().unwrap().unwrap();
+            if stale {
+                assert_eq!(reply.summary.control_state, "paused");
+                engine.paper_control(run, Control::Resume).unwrap();
+                assert!(!engine.paper_effective().0);
+                driver.observe(62000, 2, "80", "25");
+                driver.input(
+                    62000,
+                    Payload::Book(driver.side_book(rules::Side::No, "25", 2, 62000, 10_000_000)),
+                );
+                assert_eq!(driver.summary.control_state, "active");
+                continue;
+            }
+            // Known limit: the undeliverable loss permanently stops the run.
+            assert_eq!(reply.summary.control_state, "stopped");
+            assert!(reply.context.is_none());
+            let book = Input {
+                context: driver.context,
+                ordinal: driver.ordinal + 1,
+                virtual_ms: 61000,
+                payload: Payload::Book(driver.book(10_000_000)),
+            };
+            assert_eq!(
+                engine.paper_input(book).unwrap_err().code,
+                "stopped_context"
             );
             let db = rusqlite::Connection::open(&path).unwrap();
             assert_eq!(

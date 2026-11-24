@@ -169,12 +169,22 @@ impl Transport {
             budget.data_messages,
         ])
     }
+    // Test accessor; production credits accepted prices in SourceWorker::process.
+    #[cfg(test)]
     pub fn retry_usable(&self, provider: Provider, now: Instant) -> Result<(), Failure> {
         self.retries[provider.index()]
             .lock()
             .map_err(|_| Failure::Unavailable)?
             .usable(now);
         Ok(())
+    }
+    // Test accessor for a shared-state failure, as the connect and REST retry loops record one.
+    #[cfg(test)]
+    pub fn retry_failed(&self, provider: Provider) {
+        self.retries[provider.index()]
+            .lock()
+            .unwrap()
+            .delay(Failure::Transport);
     }
     pub fn slow_retry(&self, provider: Provider) -> Result<bool, Failure> {
         Ok(self.retries[provider.index()]
@@ -673,7 +683,6 @@ impl Transport {
         let mut read_stop = stop.clone();
         let read_fence = fence.clone();
         let io_timeout = std::sync::atomic::AtomicBool::new(false);
-        let mut credited = 0;
         let read = async {
             loop {
                 let deadline = Instant::now() + Duration::from_secs(10);
@@ -693,10 +702,10 @@ impl Transport {
                             let receive=reader.next();tokio::pin!(receive);
                             loop {
                                 let timed=read_progress.as_ref().and_then(|p|p.borrow().deadline()).unwrap_or(deadline).min(deadline);
-                                let changed=async {if let Some(p)=&mut read_progress{p.changed().await.map_err(|_|Failure::Stopped)?;Ok(p.borrow().priced)}else{std::future::pending::<Result<u64,Failure>>().await}};
+                                let changed=async {if let Some(p)=&mut read_progress{p.changed().await.map_err(|_|Failure::Stopped)}else{std::future::pending::<Result<(),Failure>>().await}};
                                 tokio::select!{biased;
                                     _=tokio::time::sleep_until(timed)=>return Err(Failure::Deadline),
-                                    change=changed=>{let priced=change?;if priced!=credited{credited=priced;self.retry_usable(provider,Instant::now())?;}},
+                                    change=changed=>{change?;},
                                     message=&mut receive=>break message.ok_or(Failure::Transport)?.map_err(websocket_failure),
                                 }
                             }
@@ -725,6 +734,7 @@ impl Transport {
                         );
                         item.source_tokens = Some(receipt_tokens);
                         item.progress = progress.clone();
+                        item.retry = Some(self.retries[provider.index()].clone());
                         if item.bytes.len() > MAX_BYTES {
                             return Err(Failure::Capacity);
                         }
@@ -880,8 +890,7 @@ impl Transport {
     }
 }
 
-/// Transport wait deadlines and a count of frames carrying an engine-accepted price value, which only
-/// paces reconnects. These grant no freshness or history capability.
+/// Transport wait deadlines only. These flags grant no freshness or history capability.
 #[derive(Clone)]
 pub(super) struct Progress {
     requested: [Option<Instant>; 6],
@@ -896,7 +905,6 @@ pub(super) struct Progress {
     disabled: [bool; 6],
     pub tokens: [Option<metten_engine::sources::StreamToken>; 6],
     pub desired_book: Option<metten_engine::sources::StreamToken>,
-    pub priced: u64,
 }
 impl Progress {
     pub fn new() -> Self {
@@ -913,7 +921,6 @@ impl Progress {
             disabled: [false; 6],
             tokens: [None; 6],
             desired_book: None,
-            priced: 0,
         }
     }
     fn request(&mut self, command: &Control) -> Result<(), Failure> {

@@ -754,8 +754,13 @@ impl SourceWorker {
             )?;
             return Err(Failure::Stopped);
         }
-        if priced && let Some(progress) = &item.progress {
-            progress.send_modify(|p| p.priced = p.priced.wrapping_add(1));
+        if priced
+            && let Some(retry) = &item.retry
+            && let Ok(mut retry) = retry.lock()
+            // Failure, close and drop revoke the fence before locking, so this credit stays in order with them.
+            && item.fence.current(item.generation)
+        {
+            retry.usable(Instant::now());
         }
         Ok(())
     }

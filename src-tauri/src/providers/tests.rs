@@ -1304,156 +1304,166 @@ async fn step_clock(by: Duration) {
     tokio::time::resume();
 }
 
-/// Five real socket losses put `provider` into slow retry; a sixth production-configured connection then
-/// carries `frames`, one second of controlled clock apart, through `serve` into a display worker.
-/// Returns the transport after that connection stops.
-async fn slow_retry_then_serve(
+/// A sixth production-configured connection, served after five real socket losses put its provider into
+/// slow retry. Each frame passes from a local peer through `serve` into a display worker.
+struct Served {
+    transport: Arc<transport::Transport>,
     provider: Provider,
-    frames: Vec<String>,
-) -> Arc<transport::Transport> {
-    use futures_util::{SinkExt, StreamExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let (frames_tx, mut frames_rx) = mpsc::unbounded_channel::<String>();
-    let peer = tokio::spawn(async move {
+    worker: SourceWorker,
+    start: Instant,
+    frames: mpsc::UnboundedSender<String>,
+    receipts: mpsc::Receiver<Intake>,
+    signal: watch::Sender<bool>,
+    service: tokio::task::JoinHandle<Result<(), Failure>>,
+}
+impl Served {
+    async fn start(provider: Provider) -> Self {
+        use futures_util::{SinkExt, StreamExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (frames, mut frames_rx) = mpsc::unbounded_channel::<String>();
+        // The peer keeps accepting so a test can make the next attempt; the runtime ends it.
+        drop(tokio::spawn(async move {
+            for _ in 0..5 {
+                let (socket, _) = listener.accept().await.unwrap();
+                drop(tokio_tungstenite::accept_async(socket).await.unwrap());
+            }
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+            while let Some(frame) = frames_rx.recv().await {
+                socket
+                    .send(tokio_tungstenite::tungstenite::Message::Text(frame.into()))
+                    .await
+                    .unwrap();
+            }
+            let _ = socket.next().await;
+            let mut held = Vec::new();
+            loop {
+                let (socket, _) = listener.accept().await.unwrap();
+                held.push(tokio_tungstenite::accept_async(socket).await.unwrap());
+            }
+        }));
+        let transport = Arc::new(transport::Transport::controlled(address));
+        let key = signing::Key::parse(&ed_pem()).unwrap();
+        let credential = (provider == Provider::Kalshi).then_some(("controlled", &key));
+        let start = Instant::now();
+        let mut worker = SourceWorker::prepare_display(transport.memory().clone()).unwrap();
+        let (index, stream) = match provider {
+            Provider::Kalshi => (1, metten_engine::sources::Stream::Book),
+            Provider::Coinbase => (2, metten_engine::sources::Stream::Coinbase),
+            Provider::Kraken => (3, metten_engine::sources::Stream::Kraken),
+        };
+        let mut enabled = [false; 4];
+        enabled[index] = true;
+        worker.membership(enabled, 0).unwrap();
+        worker
+            .connection(
+                provider,
+                worker.state.token(stream),
+                metten_engine::sources::Connection::Open,
+                0,
+            )
+            .unwrap();
+        let tokens = worker.tokens();
+        let (signal, stop) = watch::channel(false);
+        let connect = || {
+            let transport = transport.clone();
+            let mut stop = stop.clone();
+            async move {
+                transport
+                    .connect(
+                        provider,
+                        credential,
+                        &mut stop,
+                        Instant::now() + SHUTDOWN,
+                        &Fence::new(),
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
         for _ in 0..5 {
-            let (socket, _) = listener.accept().await.unwrap();
-            drop(tokio_tungstenite::accept_async(socket).await.unwrap());
+            step_clock(Duration::from_secs(61)).await;
+            let connection = connect().await;
+            let (_controls, mut controls_rx) = mpsc::channel(1);
+            let (intake, _receipts) = intake();
+            let progress = Some(watch::channel(transport::Progress::new()).0);
+            assert_eq!(
+                transport
+                    .serve(
+                        connection,
+                        &mut controls_rx,
+                        intake,
+                        tokens,
+                        stop.clone(),
+                        progress
+                    )
+                    .await,
+                Err(Failure::Transport)
+            );
         }
-        let (socket, _) = listener.accept().await.unwrap();
-        let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
-        while let Some(frame) = frames_rx.recv().await {
-            socket
-                .send(tokio_tungstenite::tungstenite::Message::Text(frame.into()))
-                .await
-                .unwrap();
-        }
-        let _ = socket.next().await;
-        let mut held = Vec::new();
-        loop {
-            let (socket, _) = listener.accept().await.unwrap();
-            held.push(tokio_tungstenite::accept_async(socket).await.unwrap());
-        }
-    });
-    let transport = Arc::new(transport::Transport::controlled(address));
-    let key = signing::Key::parse(&ed_pem()).unwrap();
-    let credential = (provider == Provider::Kalshi).then_some(("controlled", &key));
-    let start = Instant::now();
-    let mut worker = SourceWorker::prepare_display(transport.memory().clone()).unwrap();
-    let (index, stream) = match provider {
-        Provider::Kalshi => (1, metten_engine::sources::Stream::Book),
-        Provider::Coinbase => (2, metten_engine::sources::Stream::Coinbase),
-        Provider::Kraken => (3, metten_engine::sources::Stream::Kraken),
-    };
-    let mut enabled = [false; 4];
-    enabled[index] = true;
-    worker.membership(enabled, 0).unwrap();
-    worker
-        .connection(
-            provider,
-            worker.state.token(stream),
-            metten_engine::sources::Connection::Open,
-            0,
-        )
-        .unwrap();
-    let tokens = worker.tokens();
-    let (signal, stop) = watch::channel(false);
-    let connect = || {
-        let transport = transport.clone();
-        let mut stop = stop.clone();
-        async move {
-            transport
-                .connect(
-                    provider,
-                    credential,
-                    &mut stop,
-                    Instant::now() + SHUTDOWN,
-                    &Fence::new(),
-                )
-                .await
-                .unwrap()
-        }
-    };
-    for _ in 0..5 {
+        assert!(transport.slow_retry(provider).unwrap());
         step_clock(Duration::from_secs(61)).await;
         let connection = connect().await;
-        let (_controls, mut controls_rx) = mpsc::channel(1);
-        let (intake, _receipts) = intake();
-        let progress = Some(watch::channel(transport::Progress::new()).0);
-        assert_eq!(
-            transport
+        let (controls, mut controls_rx) = mpsc::channel(1);
+        let (intake, receipts) = intake();
+        let served = transport.clone();
+        let service = tokio::spawn(async move {
+            let _controls = controls;
+            served
                 .serve(
                     connection,
                     &mut controls_rx,
                     intake,
                     tokens,
-                    stop.clone(),
-                    progress
+                    stop,
+                    Some(watch::channel(transport::Progress::new()).0),
                 )
-                .await,
-            Err(Failure::Transport)
-        );
+                .await
+        });
+        Self {
+            transport,
+            provider,
+            worker,
+            start,
+            frames,
+            receipts,
+            signal,
+            service,
+        }
     }
-    assert!(transport.slow_retry(provider).unwrap());
-    step_clock(Duration::from_secs(61)).await;
-    let connection = connect().await;
-    let (controls, mut controls_rx) = mpsc::channel(1);
-    let (intake, mut receipts) = intake();
-    let served = transport.clone();
-    let stopped = stop.clone();
-    let service = tokio::spawn(async move {
-        let _controls = controls;
-        served
-            .serve(
-                connection,
-                &mut controls_rx,
-                intake,
-                tokens,
-                stopped,
-                Some(watch::channel(transport::Progress::new()).0),
-            )
+    /// The peer sends `frame`; the worker processes it at the current controlled time.
+    async fn frame(&mut self, frame: String) {
+        self.frames.send(frame).unwrap();
+        let item = tokio::time::timeout(SHUTDOWN, self.receipts.recv())
             .await
-    });
-    if frames.is_empty() {
-        for _ in 0..31 {
-            step_clock(Duration::from_secs(1)).await;
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(
-            tokio::time::timeout(SHUTDOWN, service)
-                .await
-                .unwrap()
-                .unwrap(),
-            Err(Failure::Deadline)
-        );
-    } else {
-        let count = frames.len();
+            .unwrap()
+            .unwrap();
+        let at = u64::try_from(self.start.elapsed().as_millis()).unwrap();
+        self.worker.process(item, at, 0, |_| Ok(())).unwrap();
+    }
+    /// Frames one second of controlled clock apart, with no step after the last.
+    async fn frames(&mut self, frames: impl IntoIterator<Item = String>) {
         for (i, frame) in frames.into_iter().enumerate() {
-            frames_tx.send(frame).unwrap();
-            // Serve's biased wait handles the previous frame's credit before it reads this one.
-            let item = tokio::time::timeout(SHUTDOWN, receipts.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            if i + 1 == count {
-                break;
+            if i > 0 {
+                step_clock(Duration::from_secs(1)).await;
             }
-            step_clock(Duration::from_secs(1)).await;
-            let at = u64::try_from(start.elapsed().as_millis()).unwrap();
-            worker.process(item, at, 0, |_| Ok(())).unwrap();
+            self.frame(frame).await;
         }
-        signal.send_replace(true);
+    }
+    /// Stops at once; returns whether slow retry is still on.
+    async fn stop(self) -> (Arc<transport::Transport>, bool) {
+        self.signal.send_replace(true);
         assert_eq!(
-            tokio::time::timeout(SHUTDOWN, service)
+            tokio::time::timeout(SHUTDOWN, self.service)
                 .await
                 .unwrap()
                 .unwrap(),
             Err(Failure::Stopped)
         );
+        let slow = self.transport.slow_retry(self.provider).unwrap();
+        (self.transport, slow)
     }
-    // The peer keeps accepting so the caller can make the next attempt; the runtime ends it.
-    drop((frames_tx, peer));
-    transport
 }
 
 fn coinbase_match(trade_id: u64) -> String {
@@ -1466,13 +1476,23 @@ fn coinbase_match(trade_id: u64) -> String {
         r#"{{"type":"{kind}","product_id":"BTC-USD","trade_id":{trade_id},"price":"68000.12","time":"2026-11-16T00:00:00Z"}}"#
     )
 }
+fn coinbase_heartbeat(last_trade_id: u64) -> String {
+    format!(r#"{{"type":"heartbeat","product_id":"BTC-USD","last_trade_id":{last_trade_id}}}"#)
+}
+fn brti_index_list(seq: u64, present: bool) -> String {
+    let ids = if present { r#"["BRTI"]"# } else { "[]" };
+    format!(
+        r#"{{"type":"cfbenchmarks_value_indexlist","sid":3,"seq":{seq},"msg":{{"index_ids":{ids}}}}}"#
+    )
+}
 
 #[tokio::test]
-async fn accepted_prices_for_thirty_seconds_end_slow_retry_on_their_connection() {
-    // 31 processed prices one second apart span 30 s; the 32nd frame only synchronizes the last credit.
-    let transport =
-        slow_retry_then_serve(Provider::Coinbase, (10..42).map(coinbase_match).collect()).await;
-    assert!(!transport.slow_retry(Provider::Coinbase).unwrap());
+async fn price_thirty_seconds_after_the_first_ends_slow_retry_even_when_stopped_at_once() {
+    let mut served = Served::start(Provider::Coinbase).await;
+    // 31 prices one second apart span 30 s; the connection stops right after the last is accepted.
+    served.frames((10..41).map(coinbase_match)).await;
+    let (transport, slow) = served.stop().await;
+    assert!(!slow);
     let (_signal, mut stop) = watch::channel(false);
     assert!(
         transport
@@ -1491,39 +1511,76 @@ async fn accepted_prices_for_thirty_seconds_end_slow_retry_on_their_connection()
 
 #[tokio::test]
 async fn handshake_or_twenty_nine_seconds_of_prices_keep_slow_retry() {
-    let transport = slow_retry_then_serve(Provider::Coinbase, vec![]).await;
-    assert!(transport.slow_retry(Provider::Coinbase).unwrap());
-    let transport =
-        slow_retry_then_serve(Provider::Coinbase, (10..41).map(coinbase_match).collect()).await;
-    assert!(transport.slow_retry(Provider::Coinbase).unwrap());
+    let served = Served::start(Provider::Coinbase).await;
+    for _ in 0..31 {
+        step_clock(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        tokio::time::timeout(SHUTDOWN, served.service)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(Failure::Deadline)
+    );
+    assert!(served.transport.slow_retry(Provider::Coinbase).unwrap());
+    let mut served = Served::start(Provider::Coinbase).await;
+    served.frames((10..40).map(coinbase_match)).await;
+    assert!(served.stop().await.1);
+}
+
+#[tokio::test]
+async fn late_reader_cannot_stretch_twenty_nine_seconds_of_prices() {
+    let mut served = Served::start(Provider::Coinbase).await;
+    served.frames((10..40).map(coinbase_match)).await;
+    step_clock(Duration::from_secs(2)).await;
+    served.frame(coinbase_heartbeat(39)).await;
+    assert!(served.stop().await.1);
+}
+
+#[tokio::test]
+async fn shared_failure_between_prices_restarts_the_thirty_seconds() {
+    let mut served = Served::start(Provider::Coinbase).await;
+    served.frame(coinbase_match(10)).await;
+    served.transport.retry_failed(Provider::Coinbase);
+    for _ in 0..31 {
+        step_clock(Duration::from_secs(1)).await;
+        served.frame(coinbase_heartbeat(10)).await;
+    }
+    served.frame(coinbase_match(11)).await;
+    step_clock(Duration::from_secs(1)).await;
+    served.frame(coinbase_heartbeat(11)).await;
+    assert!(served.stop().await.1);
 }
 
 #[tokio::test]
 async fn frames_without_an_accepted_price_value_keep_slow_retry() {
-    let mut coinbase = vec![
-        r#"{"type":"subscriptions","channels":[{"name":"matches","product_ids":["BTC-USD"]},{"name":"heartbeat","product_ids":["BTC-USD"]}]}"#.to_owned(),
-    ];
-    coinbase
-        .extend((0..34).map(|_| {
-            r#"{"type":"heartbeat","product_id":"BTC-USD","last_trade_id":1}"#.to_owned()
-        }));
-    let transport = slow_retry_then_serve(Provider::Coinbase, coinbase).await;
-    assert!(transport.slow_retry(Provider::Coinbase).unwrap());
-    let mut kalshi =
-        vec![r#"{"type":"subscribed","msg":{"sid":3,"channel":"cfbenchmarks_value"}}"#.to_owned()];
-    // Present index lists decode as heartbeats; the last processed one reports BRTI absent.
-    kalshi.extend((1..35).map(|seq| {
-        let ids = if seq == 33 { "[]" } else { r#"["BRTI"]"# };
-        format!(
-            r#"{{"type":"cfbenchmarks_value_indexlist","sid":3,"seq":{seq},"msg":{{"index_ids":{ids}}}}}"#
-        )
-    }));
-    let transport = slow_retry_then_serve(Provider::Kalshi, kalshi).await;
-    assert!(transport.slow_retry(Provider::Kalshi).unwrap());
+    let mut served = Served::start(Provider::Coinbase).await;
+    served.frames(
+        std::iter::once(r#"{"type":"subscriptions","channels":[{"name":"matches","product_ids":["BTC-USD"]},{"name":"heartbeat","product_ids":["BTC-USD"]}]}"#.to_owned())
+            .chain((0..34).map(|_| coinbase_heartbeat(1))),
+    )
+    .await;
+    assert!(served.stop().await.1);
+    // One accepted BRTI value, then 31 s of index-list heartbeats ending with an absent reading,
+    // which would complete the interval if it were credited.
+    let mut served = Served::start(Provider::Kalshi).await;
+    served
+        .frames([
+            r#"{"type":"subscribed","msg":{"sid":3,"channel":"cfbenchmarks_value"}}"#.to_owned(),
+            brti_index_list(1, true),
+            r#"{"type":"cfbenchmarks_value","sid":3,"seq":2,"msg":{"index_id":"BRTI","data":"{\"id\":\"BRTI\",\"time\":1,\"value\":\"68000.12\"}"}}"#.to_owned(),
+        ])
+        .await;
+    for seq in 3..34 {
+        step_clock(Duration::from_secs(1)).await;
+        served.frame(brti_index_list(seq, seq != 33)).await;
+    }
+    assert!(served.stop().await.1);
 }
 
-#[test]
-fn only_frames_with_an_accepted_price_value_are_credited() {
+#[tokio::test(start_paused = true)]
+async fn only_frames_with_an_accepted_price_value_are_credited() {
     use metten_engine::sources::Connection;
     let mut worker = SourceWorker::prepare(
         &all_source_strategy(),
@@ -1535,16 +1592,25 @@ fn only_frames_with_an_accepted_price_value_are_credited() {
         .connection(Provider::Kalshi, worker.tokens()[0], Connection::Open, 0)
         .unwrap();
     let fence = Fence::new();
-    let progress = watch::channel(transport::Progress::new()).0;
+    let retry = Arc::new(std::sync::Mutex::new(budget::Retry::new(1)));
+    for _ in 0..5 {
+        retry.lock().unwrap().delay(Failure::Transport);
+    }
     let subscribed = br#"{"type":"subscribed","msg":{"sid":1,"channel":"orderbook_delta"}}"#;
     let priced = book_frame(1, "KXBTC15M-0", r#"[["0.36","1"]]"#, r#"[["0.64","1"]]"#);
-    let empty = book_frame(2, "KXBTC15M-0", "[]", "[]");
     // An empty book still sends value-less updates that expire the initialized sides.
-    for (bytes, credited) in [
-        (subscribed.as_slice(), 0),
-        (priced.as_bytes(), 1),
-        (empty.as_bytes(), 1),
+    let empty = book_frame(2, "KXBTC15M-0", "[]", "[]");
+    let repriced = book_frame(3, "KXBTC15M-0", r#"[["0.40","1"]]"#, r#"[["0.60","1"]]"#);
+    // Frames 30 s apart: crediting the acknowledgment or the empty book would clear slow retry one frame early.
+    for (seq, bytes, slow) in [
+        (0, subscribed.as_slice(), true),
+        (1, priced.as_bytes(), true),
+        (2, empty.as_bytes(), true),
+        (3, repriced.as_bytes(), false),
     ] {
+        if seq > 0 {
+            tokio::time::advance(Duration::from_secs(30)).await;
+        }
         let mut item = Intake::new(
             Provider::Kalshi,
             &fence,
@@ -1552,10 +1618,10 @@ fn only_frames_with_an_accepted_price_value_are_credited() {
             Instant::now(),
         );
         item.source_tokens = Some(worker.tokens());
-        item.receipt_ms = Some(0);
-        item.progress = Some(progress.clone());
-        worker.process(item, 0, 0, |_| Ok(())).unwrap();
-        assert_eq!(progress.borrow().priced, credited);
+        item.receipt_ms = Some(seq * 30_000);
+        item.retry = Some(retry.clone());
+        worker.process(item, seq * 30_000, 0, |_| Ok(())).unwrap();
+        assert_eq!(retry.lock().unwrap().slow(), slow, "frame {seq}");
     }
 }
 

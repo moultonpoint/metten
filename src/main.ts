@@ -348,6 +348,10 @@ function paperControls() {
     element<HTMLInputElement>('paper-minimum').value = run.minimum_price;
     element<HTMLInputElement>('paper-maximum').value = run.maximum_price;
     element<HTMLInputElement>('paper-balance').value = paperMoney(run.starting_balance).slice(1);
+    const daily = run.daily_risk;
+    if (daily?.maximum_loss) element<HTMLInputElement>('paper-loss-limit').value = paperMoney(daily.maximum_loss).slice(1);
+    element<HTMLInputElement>('paper-profit-target').value = daily?.profit_target ? paperMoney(daily.profit_target).slice(1) : '';
+    element<HTMLInputElement>('paper-next-day').checked = daily?.resume_next_day ?? false;
   }
   element<HTMLButtonElement>('paper-evidence-more').disabled = paperReadBusy || paperEvidenceCursor === null;
   element('paper-go').textContent = paperStartRequest ? 'Retry the same Go request' : 'Go';
@@ -367,6 +371,21 @@ function renderPaper(snapshot: PaperSnapshot): boolean {
   element('paper-status').textContent = run && paperChecking(run.recovery) ? 'Trading paused — checking a purchase' : run ? (snapshot.effective_paused && run.control_state !== 'stopped' && run.control_state !== 'unresolved' ? 'Purchases paused · monitoring continues' : states[run.control_state]) : 'Ready for a controlled paper example';
   element('paper-fixed').textContent = run ? `Run ${run.run_id} · Version ${run.strategy_version_id} · ${run.quantity} contracts per market · ${run.minimum_price}–${run.maximum_price}¢ · starting balance ${paperMoney(run.starting_balance)} · cash ${paperMoney(run.cash)} · reserved ${paperMoney(run.reserved)}\nSynthetic clock ${run.virtual_frontier_ms} ms · ${snapshot.stop_after_market ? 'Stop after market requested · ' : ''}${run.pending_ordinal === null ? 'Displayed accounting is committed.' : 'An input remains unconfirmed; inspect details.'}` : 'Choose a saved version and fixed settings. Go waits for an eligible full boundary.';
   element('paper-recovery').textContent = run?.recovery ? paperRecovery(run.recovery) : '';
+  const daily = run?.daily_risk;
+  let risk = run ? 'Daily limits were not configured for this run.' : '';
+  if (daily) {
+    const day = new Date(Number(daily.utc_day) * 86_400_000).toISOString().slice(0, 10);
+    const target = daily.profit_target ? ` · profit target ${paperMoney(daily.profit_target)}` : '';
+    const loss = daily.maximum_loss ? ` · loss limit ${paperMoney(daily.maximum_loss)}` : '';
+    risk = `UTC ${day} · settled ${paperMoney(daily.settled_net)} · pending holdings ${paperMoney(daily.pending_holdings)} · reserved attempts ${paperMoney(daily.pending_attempts)}${loss}${target}`;
+    if (daily.stop_reason) {
+      const threshold = daily.stop_reason === 'daily_loss' ? 'Daily loss limit reached' : 'Daily profit target reached';
+      const action = run?.control_state === 'active' ? 'finishing the current market under existing safeguards' : 'new market entry blocked';
+      risk += ` · ${threshold}, ${action}`;
+    }
+    risk += '. Final losses can exceed the threshold.';
+  }
+  announce('paper-risk', risk);
   const errorCode = snapshot.playback_error ?? run?.error_code;
   announce('paper-error', errorCode ? paperFailure({ code: errorCode }) : paperRequestError);
   paperControls();
@@ -530,7 +549,11 @@ async function paperAction(request: PaperRequest) {
 }
 element('paper-go').addEventListener('click', () => {
   if (element<HTMLButtonElement>('paper-go').disabled) return;
-  paperStartRequest ??= { operation: 'start', start_uuid: crypto.randomUUID(), version_id: paperVersion.value, settings: { quantity: element<HTMLInputElement>('paper-quantity').value, minimum_price: element<HTMLInputElement>('paper-minimum').value, maximum_price: element<HTMLInputElement>('paper-maximum').value, starting_balance: element<HTMLInputElement>('paper-balance').value } };
+  paperStartRequest ??= { operation: 'start', start_uuid: crypto.randomUUID(), version_id: paperVersion.value, settings: { quantity: element<HTMLInputElement>('paper-quantity').value, minimum_price: element<HTMLInputElement>('paper-minimum').value, maximum_price: element<HTMLInputElement>('paper-maximum').value, starting_balance: element<HTMLInputElement>('paper-balance').value,
+    maximum_loss: element<HTMLInputElement>('paper-loss-limit').value,
+    profit_target: element<HTMLInputElement>('paper-profit-target').value || null,
+    resume_next_day: element<HTMLInputElement>('paper-next-day').checked,
+  } };
   void paperAction(paperStartRequest);
 });
 for (const [id, operation] of [['pause', 'pause'], ['resume', 'resume'], ['stop', 'stop_after_market'], ['settle', 'check_settlement']] as const) {

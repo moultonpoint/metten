@@ -772,3 +772,30 @@ fn recovered_zero_fill_advances_its_receipt_revision() {
     assert!(count(&path, revision) > checking);
     assert_eq!(receipt(&engine, run).attempt_state.as_deref(), Some("zero"));
 }
+
+#[test]
+fn reopen_applies_a_final_result_deferred_while_a_purchase_was_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paper.sqlite");
+    let probe = Probe::default();
+    let engine = probe.open(&path);
+    let mut driver = Driver::start(&engine);
+    let run = driver.context.run_id;
+    partial_then_uncertain_retry(&mut driver, &probe);
+    driver.input(
+        901000,
+        Payload::Settlement(scenario(1).settlement_manifest.remove(0)),
+    );
+    assert_eq!(count(&path, "SELECT count(*) FROM paper_settlements"), 0);
+    drop(engine);
+
+    probe.plan(|plan| plan.hide_records = false);
+    let reopened = probe.open(&path);
+    assert_eq!(reopened.paper_summary(run).unwrap().cash, "10515810000");
+    assert_eq!(count(&path, "SELECT count(*) FROM paper_settlements"), 1);
+    assert_eq!(probe.sends(), 2);
+    assert_eq!(
+        reopened.paper_summary(run).unwrap().control_state,
+        "stopped"
+    );
+}

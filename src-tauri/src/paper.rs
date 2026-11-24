@@ -516,6 +516,22 @@ impl Driver {
         times.sort_unstable();
         times.dedup();
         for at in times {
+            let settlements = self
+                .scenario
+                .settlements
+                .iter()
+                .filter(|s| s.available_ms == at)
+                .cloned()
+                .collect::<Vec<_>>();
+            for settlement in settlements {
+                self.submit(at, Payload::Settlement(settlement), stop)?;
+                if matches!(
+                    self.summary.control_state.as_str(),
+                    "stopped" | "unresolved"
+                ) {
+                    return Ok(());
+                }
+            }
             let boundaries = self
                 .scenario
                 .markets
@@ -527,16 +543,6 @@ impl Driver {
                 self.event(at, source::SourceEvent::Boundary { market_id }, stop)?;
             }
             self.observations(at, stop)?;
-            let settlements = self
-                .scenario
-                .settlements
-                .iter()
-                .filter(|s| s.available_ms == at)
-                .cloned()
-                .collect::<Vec<_>>();
-            for settlement in settlements {
-                self.submit(at, Payload::Settlement(settlement), stop)?;
-            }
             if self.summary.control_state == "stopped" {
                 return Ok(());
             }
@@ -697,10 +703,21 @@ fn check(
         let request = decode(&tauri::ipc::InvokeBody::Json(body))?;
         dispatch(engine, state, request)
     };
+    for refused in [
+        json!({"operation":"start_live","balance":"100"}),
+        json!({"operation":"snapshot","settlement":{"amount":"100"}}),
+    ] {
+        if decode(&tauri::ipc::InvokeBody::Json(refused))
+            .err()
+            .is_none_or(|error| error.code != "invalid_request")
+        {
+            return Err(Failure::new("unconfirmed"));
+        }
+    }
     let first = invoke(
         engine.clone(),
         &mut state,
-        json!({"operation":"start","start_uuid":"00000000-0000-4000-8000-000000000001","version_id":version,"settings":{"quantity":"10","minimum_price":"0","maximum_price":"100","starting_balance":"100"}}),
+        json!({"operation":"start","start_uuid":"00000000-0000-4000-8000-000000000001","version_id":version,"settings":{"quantity":"10","minimum_price":"0","maximum_price":"100","starting_balance":"100","maximum_loss":"100","profit_target":null,"resume_next_day":false}}),
     )?;
     let run = first["run"]["run_id"]
         .as_str()
@@ -714,7 +731,9 @@ fn check(
     // The reply is lost: nothing is debited, the reservation stays and the purchase is checked.
     let pending = invoke(engine.clone(), &mut state, json!({"operation":"snapshot"}))?;
     if pending["run"]["cash"] != "10000000000"
-        || pending["run"]["reserved"] != "263130000"
+        || pending["run"]["reserved"] != "263200000"
+        || pending["run"]["daily_risk"]["pending_attempts"] != "263200000"
+        || pending["run"]["daily_risk"]["settled_net"] != "0"
         || pending["run"]["recovery"]["state"] != "dispatched"
     {
         return Err(Failure::new("unconfirmed"));
@@ -805,7 +824,7 @@ fn check(
     let second = invoke(
         engine.clone(),
         &mut state,
-        json!({"operation":"start","start_uuid":"00000000-0000-4000-8000-000000000002","version_id":version,"settings":{"quantity":"101","minimum_price":"0","maximum_price":"100","starting_balance":"100"}}),
+        json!({"operation":"start","start_uuid":"00000000-0000-4000-8000-000000000002","version_id":version,"settings":{"quantity":"101","minimum_price":"0","maximum_price":"90","starting_balance":"100","maximum_loss":"100","profit_target":null,"resume_next_day":false}}),
     )?;
     let second_run = second["run"]["run_id"]
         .as_str()
@@ -832,9 +851,12 @@ fn check(
         || rows[0]["fee"] != "131250000"
         || rows[0]["settled_net"] != "7368750000"
         || rows[0]["paper_market_id"] == market
-        || engine
-            .paper_latest()?
-            .is_none_or(|r| r.cash != "17368750000")
+        || engine.paper_latest()?.is_none_or(|r| {
+            r.cash != "17368750000"
+                || r.daily_risk.is_none_or(|risk| {
+                    risk.settled_net != "7368750000" || risk.pending_holdings != "0"
+                })
+        })
     {
         return Err(Failure::new("unconfirmed"));
     }
@@ -843,7 +865,7 @@ fn check(
         .stop_and_save()
         .map_err(|_| Failure::new("storage"))?;
     Ok(
-        json!({"protocol":"metten-paper-check-v1","kind":"paper_check","origin":"synthetic_controlled","pending_debit":"263130000","settled_cash":"10736870000","settled_net":"736870000","partial_fill_quantity":"100","recovered_attempt_state":"full","checks":["native_decode_dispatch","shared_learning_evaluator","finite_full_partial","exact_fee_settlement","numeric_identity_history","stopped_reopen","settlement_idempotency","lost_reply_reconciliation"]}),
+        json!({"protocol":"metten-paper-check-v1","kind":"paper_check","origin":"synthetic_controlled","pending_debit":"263200000","settled_cash":"10736870000","settled_net":"736870000","partial_fill_quantity":"100","recovered_attempt_state":"full","checks":["native_decode_dispatch","shared_learning_evaluator","finite_full_partial","exact_fee_settlement","numeric_identity_history","stopped_reopen","settlement_idempotency","lost_reply_reconciliation"]}),
     )
 }
 
@@ -918,7 +940,7 @@ mod tests {
             panic!("save failed")
         };
         let mut state = NativePaper::manual();
-        let first = dispatch(engine.clone(), &mut state, decode_request(&json!({"operation":"start","start_uuid":"00000000-0000-4000-8000-000000000001","version_id":version.id,"settings":{"quantity":"10","minimum_price":"0","maximum_price":"100","starting_balance":"100"}})).unwrap()).unwrap();
+        let first = dispatch(engine.clone(), &mut state, decode_request(&json!({"operation":"start","start_uuid":"00000000-0000-4000-8000-000000000001","version_id":version.id,"settings":{"quantity":"10","minimum_price":"0","maximum_price":"100","starting_balance":"100","maximum_loss":"100","profit_target":null,"resume_next_day":false}})).unwrap()).unwrap();
         let id = positive_id(first["run"]["run_id"].as_str().unwrap()).unwrap();
         engine.paper_control(id, Control::Pause).unwrap();
         let mut resume =
@@ -964,6 +986,7 @@ mod tests {
             minimum_price: strategy::Decimal::parse("0").unwrap(),
             maximum_price: strategy::Decimal::parse("100").unwrap(),
             starting_balance: 100 * DOLLAR,
+            limits: None,
         };
         let start = scenario
             .start(
@@ -1020,7 +1043,7 @@ mod tests {
         let start = |uuid| {
             decode_request(&json!({
             "operation":"start", "start_uuid":uuid, "version_id":version.id,
-            "settings":{"quantity":"10","minimum_price":"0","maximum_price":"100","starting_balance":"100"},
+            "settings":{"quantity":"10","minimum_price":"0","maximum_price":"100","starting_balance":"100","maximum_loss":"100","profit_target":null,"resume_next_day":false},
         })).unwrap()
         };
         let mut state = NativePaper::default();

@@ -5,12 +5,14 @@ The Paper workspace uses synthetic inputs and a 20× clock. It runs a saved form
 ## Run the example
 
 1. Choose “Load the learning example to review and save.” Preview the unchanged learning JSON in Strategy versions, then save an immutable version.
-2. Return to Paper, choose that saved version and set contracts, permitted price range in cents and starting paper dollars. The entire quantity including fees must be funded. Settings stay fixed for the run.
+2. Return to Paper, choose that saved version and set contracts, permitted price range in cents and starting paper dollars. Set a daily loss limit, an optional profit target and whether to resume the next UTC day. The whole quantity must fit the balance and daily allowance at the upper price, including fees. Settings stay fixed for the run.
 3. Press Go. It waits for the next full eligible synthetic market, rather than buying the partly elapsed market. The learning strategy remembers the early side, then can buy the opposite NO side at 25¢ in the fixture.
 4. Select the participating market in the journal. Read confirmed quantity/cost/fee/debit and pending settlement. “View details” contains fixed settings, model assumptions and retained rule observations; older evidence is a bounded page, not a full tick trace.
 5. Let the synthetic outcome arrive, or stop/quit and reopen. Reopening always stays stopped. “Resolve remaining synthetic outcome” explicitly advances only settlement from the persisted manifest; it never replays source data or strategy decisions.
 
 With 10 contracts and $100 starting balance, the controlled NO purchase costs $2.50, its fee is $0.1313 and debit is $2.6313. Cash after purchase is $97.3687. The fixture's final NO outcome pays $10, producing $7.3687 settled net and $107.3687 cash. Those are synthetic receipt facts, not predicted returns.
+
+Now shows settled net for the current UTC trading day, confirmed holdings awaiting settlement, and amounts reserved for unconfirmed purchases. A result belongs to the UTC day the market closed. Exposure stays pending across midnight until its final outcome is recorded. History preserves reasons for refused purchases and market entries. A daily threshold can let the current market finish under the usual checks, then block new entries. Final losses can exceed the threshold. The controlled desktop example ends after its fixed market schedule, so it cannot demonstrate next-day resumption. The engine checks that behavior with a controlled clock.
 
 ## Execution and fee assumptions
 
@@ -32,7 +34,7 @@ The main explanation prioritizes unresolved facts, confirmed full, partial and z
 
 ## Workspace and verification limits
 
-This implementation migrates SQLite to schema 6, preserving session, strategy and earlier paper records; older binaries refuse the migrated workspace. Never point verification at real financial records. The headless check uses a new owned disposable workspace and no Keychain, provider, GUI or network setup:
+This implementation migrates SQLite to schema 7, preserving session, strategy and earlier paper records; older binaries refuse the migrated workspace. Never point verification at real financial records. The headless check uses a new owned disposable workspace and no Keychain, provider, GUI or network setup:
 
 ```sh
 npm run tauri build -- --bundles app

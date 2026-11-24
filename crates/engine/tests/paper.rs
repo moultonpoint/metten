@@ -68,6 +68,7 @@ fn charge_and_settings_reject_out_of_range_values() {
         minimum_price: price("25"),
         maximum_price: price("30"),
         starting_balance: 100 * DOLLAR,
+        limits: None,
     };
     assert_eq!(charge(u64::MAX, price("25")), Err(PaperError::Range));
     assert_eq!(charge(1, price("100.000001")), Err(PaperError::Range));
@@ -1307,4 +1308,38 @@ fn same_process_failed_settlement_preserves_stopped_state_and_can_retry_once() {
         before.last_evaluated_through_ms
     );
     assert_eq!(engine.paper_check_settlement(run).unwrap().summary, settled);
+}
+
+#[test]
+fn daily_limit_refuses_the_whole_first_objective_at_the_configured_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(dir.path().join("workspace.sqlite")).unwrap();
+    let mut start = scenario(saved(&engine));
+    start.settings.maximum_price = price("90");
+    start.settings.limits = Some(DailyLimits {
+        maximum_loss: 5 * DOLLAR,
+        profit_target: None,
+        resume_next_day: false,
+    });
+    let reply = engine.paper_start(start).unwrap();
+    let mut driver = Driver {
+        engine: &engine,
+        context: reply.context.unwrap(),
+        ordinal: 0,
+        summary: reply.summary,
+    };
+    driver.prepare();
+    driver.input(61000, Payload::Book(driver.book(3_000_000)));
+    let history = engine
+        .paper_history(Some(driver.context.run_id), None)
+        .unwrap();
+    assert_eq!(history.markets[0].attempt_count, "0");
+    assert_eq!(
+        history.markets[0].risk_block.as_deref(),
+        Some("daily_budget")
+    );
+    let daily = driver.summary.daily_risk.as_ref().unwrap();
+    assert_eq!(daily.stop_reason, None);
+    assert_eq!(daily.pending_attempts, "0");
+    assert_eq!(driver.summary.control_state, "active");
 }

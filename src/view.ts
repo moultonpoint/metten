@@ -57,12 +57,12 @@ export function paperMoney(amount: string): string {
 export function paperFailure(failure: unknown): string {
   const code = failure && typeof failure === 'object' && 'code' in failure && typeof failure.code === 'string' ? failure.code : '';
   const messages: Record<string, string> = {
-    busy: 'Paper work is busy. Inspect status, then retry explicitly.', range: 'Check the quantity, price range and starting balance.', invalid_request: 'The paper request is invalid. Check the fixed settings.',
+    busy: 'Paper work is busy. Inspect status, then retry explicitly.', range: 'Check the quantity, price range, starting balance and daily limits.', invalid_request: 'The paper request is invalid. Check the fixed settings.',
     unsupported_input: 'This controlled example supports Kalshi asks with no historical lookback. Choose a compatible saved version.',
     run_active: 'Finish the current run and resolve its holdings before starting another example.', stale_run: 'This control belongs to an older run. Refresh paper status.',
     stopped_context: 'Purchases are stopped. Reopening never restarts playback.', unresolved: 'A purchase outcome is unresolved. New purchases remain blocked; confirmed history is retained.',
     checking_purchase: 'A purchase is still being checked. Purchases stay paused until its outcome is confirmed.',
-    report_conflict: 'The venue record contradicts the recorded purchase request. Confirmed accounting is kept and purchases remain blocked.',
+    report_conflict: 'The venue report contradicts recorded purchase or settlement facts. Confirmed accounting is kept and purchases remain blocked.',
     storage: 'Recording could not be confirmed. Purchases are fenced. Inspect retained history and retry Quit after fixing storage.',
     unconfirmed: 'This action is not confirmed. Inspect paper status before retrying.', resource_limit: 'The controlled input or response exceeds its supported bound. Purchases remain blocked.',
     input_conflict: 'Conflicting paper input was refused. Purchases are stopped.', input_gap: 'A required paper input is missing. Purchases are stopped.', quitting: 'The application is stopping.',
@@ -78,6 +78,9 @@ export function paperReason(reason: string): string {
     settled: 'The identified synthetic outcome is recorded and the account reconciles after fees.',
     canceled_before_dispatch: 'The proposal was canceled before dispatch. No purchase was confirmed.',
     checking_purchase: 'A purchase may have been sent and its outcome is being checked. Its reserved funds stay held; confirmed contracts are kept.',
+    daily_budget: 'The whole purchase would exceed the remaining daily loss allowance.',
+    daily_entry_block: 'A daily threshold blocked entry into this market.',
+    funds_unavailable: 'Current funds could not be verified.',
     insufficient_funds: 'The whole objective, including its fee, could not be funded. Quantity was not reduced.',
     evidence_mismatch: 'Waiting for a finite execution book matching the exact evaluated ask identity and price.',
     purchases_paused: 'The rule qualified while purchases were paused. Monitoring continued; no purchase was confirmed.',
@@ -113,12 +116,13 @@ export function paperReceipt(receipt: PaperReceipt) {
   // Totals include only confirmed fills, so they stay true while a later attempt is unresolved.
   const held = terminal || (receipt.filled_quantity ?? '0') !== '0';
   const several = Number(receipt.attempt_count) > 1;
-  const title = confirmed ? `Bought ${receipt.filled_quantity ?? '0'}${state === 'partial' ? ' of ' + receipt.requested_quantity : ''} ${(receipt.side ?? '').toUpperCase()} · ${receipt.settled_net === null ? 'pending settlement' : 'settled'}`
+  const title = receipt.participated === false ? 'Market entry blocked' : confirmed ? `Bought ${receipt.filled_quantity ?? '0'}${state === 'partial' ? ' of ' + receipt.requested_quantity : ''} ${(receipt.side ?? '').toUpperCase()} · ${receipt.settled_net === null ? 'pending settlement' : 'settled'}`
     : state === 'zero' ? 'Attempted · zero contracts filled'
     : state === 'intent' || state === 'dispatched' || state === 'unknown' ? 'Purchase outcome unconfirmed'
     : state === 'canceled' ? 'Canceled before dispatch' : 'No confirmed purchase';
   const facts: [string, string][] = [['Paper run', receipt.run_id], ['Saved strategy version', receipt.strategy_version_id], ['Market', receipt.source_market_id], ['Requested quantity', receipt.requested_quantity], ['Confirmed quantity', held ? receipt.filled_quantity ?? '0' : state === null ? 'No purchase' : 'Unconfirmed']];
   if (several) facts.push(['Attempts', receipt.attempt_count]);
+  if (receipt.risk_block) facts.push(['Risk decision', paperReason(receipt.risk_block)]);
   if (receipt.recovery) facts.push(['Purchase check', paperRecovery(receipt.recovery)]);
   if (receipt.side !== null) facts.push(['Side', receipt.side.toUpperCase()]);
   if (receipt.price !== null) facts.push([several ? 'Latest attempt price per contract' : 'Requested price per contract', paperMoney(receipt.price)]);
@@ -131,7 +135,7 @@ export function paperReceipt(receipt: PaperReceipt) {
   const check = receipt.purchase_check;
   const block = check && ['price', 'insufficient_funds', 'purchases_paused', 'evidence_mismatch'].includes(receipt.reason)
     ? ` At ${check.evaluated_at_ms} ms, ${check.offered_price === null ? 'the offered price was unavailable' : 'the offered price was ' + check.offered_price + '¢'}; permitted range ${check.minimum_price}–${check.maximum_price}¢.${receipt.reason === 'insufficient_funds' && check.required_debit !== null ? ' Full debit required ' + paperMoney(check.required_debit) + '; available ' + paperMoney(check.available_funds) + '.' : ''}` : '';
-  return { title, reason: (['condition_false', 'unavailable', 'unavailable_evidence', 'eligible'].includes(receipt.reason) && receipt.primary_witness ? paperWitness(receipt.primary_witness) : paperReason(receipt.reason) + (['ambiguous_side', 'objective_blocked'].includes(receipt.reason) && receipt.primary_witness ? ' ' + paperWitness(receipt.primary_witness) : '')) + block, facts };
+  return { title, reason: (['condition_false', 'unavailable', 'unavailable_evidence', 'eligible'].includes(receipt.reason) && receipt.primary_witness ? paperWitness(receipt.primary_witness) : paperReason(receipt.participated === false ? receipt.risk_block ?? receipt.reason : receipt.reason) + (['ambiguous_side', 'objective_blocked'].includes(receipt.reason) && receipt.primary_witness ? ' ' + paperWitness(receipt.primary_witness) : '')) + block, facts };
 }
 
 export function paperChecking(recovery: PaperRecovery | null | undefined): boolean {

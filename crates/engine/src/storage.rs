@@ -678,11 +678,13 @@ impl Recorder {
             let utc = summary.go_utc_ms.parse::<i64>().ok().zip(summary.virtual_frontier_ms.parse::<i64>().ok())
                 .and_then(|(go, at)| go.checked_add(at))
                 .ok_or_else(|| crate::paper::Failure::new("range"))?;
-            summary.current_risk_block = self.connection.query_row(
+            if summary.control_state == "active" {
+                summary.current_risk_block = self.connection.query_row(
                 "SELECT json_extract(summary,'$.current_risk_block') FROM paper_markets
                  WHERE run_id=?1 AND participated=1 AND open_utc_ms<=?2 AND close_utc_ms>?2",
                 params![run_id, utc], |row| row.get::<_,Option<String>>(0),
-            ).optional().map_err(paper_storage)?.flatten();
+                ).optional().map_err(paper_storage)?.flatten();
+            }
             summary.daily_risk = self.daily_risk(run_id, utc.div_euclid(86_400_000))?;
             Ok(summary)
         })
@@ -872,7 +874,15 @@ impl Recorder {
         if !["waiting", "active", "paused", "stopped", "unresolved"].contains(&state) {
             return Err(crate::paper::Failure::new("invalid_request"));
         }
-        self.connection.execute("UPDATE paper_runs SET control_state=CASE WHEN control_state='unresolved' OR ?2='unresolved' OR (?2='stopped' AND EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown'))) THEN 'unresolved' ELSE ?2 END,stop_after_market=max(stop_after_market,?3),error_code=CASE WHEN ?4='report_conflict' THEN ?4 WHEN control_state='unresolved' OR EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown')) THEN coalesce(error_code,?4) ELSE coalesce(?4,error_code) END,revision=revision+1 WHERE run_id=?1",params![run,state,stop_after,error]).map_err(paper_storage)?;
+        let tx = self.connection.transaction().map_err(paper_storage)?;
+        tx.execute("UPDATE paper_runs SET control_state=CASE WHEN control_state='unresolved' OR ?2='unresolved' OR (?2='stopped' AND EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown'))) THEN 'unresolved' ELSE ?2 END,stop_after_market=max(stop_after_market,?3),error_code=CASE WHEN ?4='report_conflict' THEN ?4 WHEN control_state='unresolved' OR EXISTS(SELECT 1 FROM paper_attempts WHERE run_id=?1 AND state IN ('intent','dispatched','unknown')) THEN coalesce(error_code,?4) ELSE coalesce(?4,error_code) END,revision=revision+1 WHERE run_id=?1",params![run,state,stop_after,error]).map_err(paper_storage)?;
+        tx.execute(
+            "UPDATE paper_markets SET summary=json_remove(summary,'$.current_risk_block')
+             WHERE run_id=?1 AND json_extract(summary,'$.current_risk_block') IS NOT NULL",
+            [run],
+        )
+        .map_err(paper_storage)?;
+        tx.commit().map_err(paper_storage)?;
         self.paper_summary(run)
     }
 

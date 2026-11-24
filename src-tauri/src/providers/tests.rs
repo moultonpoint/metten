@@ -1467,6 +1467,41 @@ impl Served {
         let at = u64::try_from(self.start.elapsed().as_millis()).unwrap();
         self.worker.process(item, at, 0, |_| Ok(())).unwrap();
     }
+    /// Processes `frame` on a worker thread with the clock paused; `between` runs once, after the engine
+    /// accepts the frame's value and before `process` returns.
+    async fn frame_interrupted(
+        &mut self,
+        frame: String,
+        between: impl FnOnce(&std::sync::Mutex<budget::Retry>, &tokio::runtime::Handle) + Send,
+    ) {
+        self.frames.send(frame).unwrap();
+        let item = tokio::time::timeout(SHUTDOWN, self.receipts.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let retry = item.retry.clone().unwrap();
+        let at = u64::try_from(self.start.elapsed().as_millis()).unwrap();
+        let runtime = tokio::runtime::Handle::current();
+        let worker = &mut self.worker;
+        tokio::time::pause();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    let _clock = runtime.enter();
+                    let mut between = Some(between);
+                    worker.process(item, at, 0, |_| {
+                        if let Some(between) = between.take() {
+                            between(&retry, &runtime);
+                        }
+                        Ok(())
+                    })
+                })
+                .join()
+                .unwrap()
+                .unwrap();
+        });
+        tokio::time::resume();
+    }
     /// Frames one second of controlled clock apart, with no step after the last.
     async fn frames(&mut self, frames: impl IntoIterator<Item = String>) {
         for (i, frame) in frames.into_iter().enumerate() {
@@ -1551,6 +1586,37 @@ async fn handshake_or_twenty_nine_seconds_of_prices_keep_slow_retry() {
     assert!(served.transport.slow_retry(Provider::Coinbase).unwrap());
     let mut served = Served::start(Provider::Coinbase).await;
     served.frames((10..40).map(coinbase_match)).await;
+    assert!(served.stop().await.1);
+}
+
+#[tokio::test]
+async fn slow_frame_finish_cannot_stretch_twenty_nine_seconds_of_prices() {
+    let mut served = Served::start(Provider::Coinbase).await;
+    served.frames((10..39).map(coinbase_match)).await;
+    step_clock(Duration::from_secs(1)).await;
+    // The last price is accepted at 29 s; the rest of its frame handling ends at 31 s.
+    served
+        .frame_interrupted(coinbase_match(39), |_, runtime| {
+            runtime.block_on(tokio::time::advance(Duration::from_secs(2)))
+        })
+        .await;
+    assert!(served.stop().await.1);
+}
+
+#[tokio::test]
+async fn retry_clear_after_acceptance_keeps_that_price_out_of_the_next_interval() {
+    let mut served = Served::start(Provider::Coinbase).await;
+    served
+        .frame_interrupted(coinbase_match(10), |retry, runtime| {
+            retry.lock().unwrap().delay(Failure::Transport);
+            runtime.block_on(tokio::time::advance(Duration::from_secs(1)));
+        })
+        .await;
+    for _ in 0..30 {
+        step_clock(Duration::from_secs(1)).await;
+        served.frame(coinbase_heartbeat(10)).await;
+    }
+    served.frame(coinbase_match(11)).await;
     assert!(served.stop().await.1);
 }
 
@@ -1651,9 +1717,9 @@ async fn only_frames_with_an_accepted_price_value_are_credited() {
         (2, empty.as_bytes(), true),
         (3, repriced.as_bytes(), false),
     ] {
-        if seq > 0 {
-            tokio::time::advance(Duration::from_secs(30)).await;
-        }
+        // The acknowledgment follows the last clear by 1 s, so the strict comparison cannot hide its credit.
+        let step = if seq == 0 { 1 } else { 30 };
+        tokio::time::advance(Duration::from_secs(step)).await;
         let mut item = Intake::new(
             Provider::Kalshi,
             &fence,

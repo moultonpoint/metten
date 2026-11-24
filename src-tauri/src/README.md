@@ -160,9 +160,10 @@ start, capped at 60 seconds with bounded positive jitter; five failed attempts
 enter a queryable slow-retry state with at most one attempt/minute. Slow retry clears
 when the engine accepts a price value and accepts another at least 30 seconds later on
 the same connection, with no failure, close or drop between them. Heartbeats,
-acknowledgments, handshakes and absent or empty readings never count. This paces
-reconnects only: it grants no freshness and feeds no purchase decision. Socket loss resets
-that interval before later recovery. Intentional cancellation resets
+acknowledgments, handshakes and absent or empty readings never count. Because all of a
+provider's transport attempts share that one retry owner, clearing slow retry restores normal
+pacing for every one of them. This paces reconnects only: it grants no freshness and feeds no
+purchase decision. Socket loss resets that accepted-price interval before later recovery. Intentional cancellation resets
 that interval without incrementing transient failures; malformed protocol remains
 terminal. Each failed socket operation is recorded once, then closed/revoked. Denial/protocol/capacity
 failures are terminal for that operation. Metadata and handshakes have a 10-second
@@ -275,7 +276,7 @@ read I/O timeout records one transient retry; expiration while waiting only for 
 control permit does not. Frames reset slow retry only through the
 [step-3](#step-3-provider-foundation) accepted-price rule; arrival alone never does.
 Explicit close and unpolled owned-service Drop reset the
-usable interval without counting a transient failure. Ping wakeups coalesce while
+accepted-price interval without counting a transient failure. Ping wakeups coalesce while
 the library owns the pending automatic pong, independently of subscription permits.
 The keepalive counter counts explicit flush attempts, not every automatic wire pong.
 Network deadlines grant neither price validity nor history.

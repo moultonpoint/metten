@@ -895,9 +895,11 @@ impl Run {
                     updates, coverage, ..
                 } => {
                     updates.len() + coverage.len() > 0
-                        && updates
-                            .iter()
-                            .all(|u| retired_scope(Some(&u.binding.scope)))
+                        // A value counts only if its descriptor is exactly a catalog binding.
+                        && updates.iter().all(|u| {
+                            self.bindings.contains(&u.binding)
+                                && retired_scope(Some(&u.binding.scope))
+                        })
                         && coverage.iter().all(|c| {
                             retired_scope(
                                 self.bindings

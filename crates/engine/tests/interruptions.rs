@@ -383,50 +383,69 @@ fn a_level_checkpoint_true_in_the_fresh_post_reconnect_snapshot_latches_at_snaps
 
 #[test]
 fn checkpoints_reset_when_the_next_market_is_entered_at_its_opening() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("paper.sqlite");
-    let engine = Engine::open(&path).unwrap();
-    let mut driver = driver_for(&engine, two_windows(&engine));
-    let run = driver.context.run_id;
-    // A latches YES at its opening; B is prepared with YES 50, which never qualifies.
-    enter_a(&mut driver);
-    driver.source(
-        901000,
-        src::SourceEvent::Boundary {
-            market_id: "KXBTC15M-PAPER-B".into(),
-        },
-    );
-    // In B's purchase window NO 25 would buy only if A's latch had carried over.
-    send(
-        &mut driver,
-        962000,
-        update(
-            "KXBTC15M-PAPER-B",
-            "paper-b",
-            3,
-            "80",
-            "25",
-            Some(1),
-            2000000,
-        ),
-    );
-    driver.input(
-        962000,
-        Payload::Book(Book {
-            source_market_id: "KXBTC15M-PAPER-B".into(),
-            source_contract_id: "paper-b".into(),
-            valid_until_ms: 2000000,
-            ..driver.side_book(No, "25", 1, 962000, 10_000_000)
-        }),
-    );
-    let mut entered = participated(&engine, run);
-    entered.sort();
-    assert_eq!(entered, ["KXBTC15M-PAPER-A", "KXBTC15M-PAPER-B"]);
-    assert_eq!(
-        latches(&engine, run),
-        [("KXBTC15M-PAPER-A".into(), "yes".into(), "1000".into())]
-    );
-    assert!(attempts(&path).is_empty());
+    // Control: the same window-B book buys once B latches its own checkpoint.
+    for latch_in_b in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paper.sqlite");
+        let engine = Engine::open(&path).unwrap();
+        let mut driver = driver_for(&engine, two_windows(&engine));
+        let run = driver.context.run_id;
+        // A latches YES at its opening; B is prepared with YES 50, which never qualifies.
+        enter_a(&mut driver);
+        driver.source(
+            901000,
+            src::SourceEvent::Boundary {
+                market_id: "KXBTC15M-PAPER-B".into(),
+            },
+        );
+        let b = "KXBTC15M-PAPER-B";
+        if latch_in_b {
+            send(
+                &mut driver,
+                902000,
+                update(b, "paper-b", 3, "35", "70", Some(1), 2000000),
+            );
+        }
+        // In B's purchase window NO 25 buys only with a YES latch in B.
+        let number = if latch_in_b { 2 } else { 1 };
+        send(
+            &mut driver,
+            962000,
+            update(
+                "KXBTC15M-PAPER-B",
+                "paper-b",
+                3,
+                "80",
+                "25",
+                Some(number),
+                2000000,
+            ),
+        );
+        driver.input(
+            962000,
+            Payload::Book(Book {
+                source_market_id: "KXBTC15M-PAPER-B".into(),
+                source_contract_id: "paper-b".into(),
+                valid_until_ms: 2000000,
+                ..driver.side_book(No, "25", number, 962000, 10_000_000)
+            }),
+        );
+        let mut entered = participated(&engine, run);
+        entered.sort();
+        assert_eq!(entered, ["KXBTC15M-PAPER-A", "KXBTC15M-PAPER-B"]);
+        let mut found = latches(&engine, run);
+        found.sort();
+        let mut expected = vec![(
+            "KXBTC15M-PAPER-A".to_string(),
+            "yes".to_string(),
+            "1000".to_string(),
+        )];
+        if latch_in_b {
+            expected.push((b.into(), "yes".into(), "902000".into()));
+        }
+        assert_eq!(found, expected);
+        assert_eq!(attempts(&path).len(), usize::from(latch_in_b));
+    }
 }
 
 #[test]
@@ -714,6 +733,23 @@ fn stale_results_are_refused_without_consuming_the_ordinal_and_unknown_or_mixed_
     };
     let current_coverage = |driver: &Driver| retired_values(driver, 3);
     let unknown_coverage = |driver: &Driver| retired_values(driver, 99);
+    // A descriptor naming the retired market on a current (3) or unknown (99) binding id.
+    let mislabelled = |driver: &Driver, yes_id: u32| src::SourceEvent::Update {
+        stream: src::Stream::Book,
+        token: driver.context.book_token,
+        updates: update(
+            CURRENT,
+            "paper-current",
+            yes_id,
+            "35",
+            "70",
+            Some(1),
+            1000000,
+        ),
+        coverage: vec![],
+    };
+    let current_id = |driver: &Driver| mislabelled(driver, 3);
+    let unknown_id = |driver: &Driver| mislabelled(driver, 99);
     let unknown_update = |driver: &Driver| src::SourceEvent::Update {
         stream: src::Stream::Book,
         token: driver.context.book_token,
@@ -738,13 +774,15 @@ fn stale_results_are_refused_without_consuming_the_ordinal_and_unknown_or_mixed_
             coverage: vec![],
         }
     };
-    let cases: [&dyn Fn(&Driver) -> src::SourceEvent; 6] = [
+    let cases: [&dyn Fn(&Driver) -> src::SourceEvent; 8] = [
         &unknown,
         &unknown_loss,
         &unknown_update,
         &mixed,
         &current_coverage,
         &unknown_coverage,
+        &current_id,
+        &unknown_id,
     ];
     for event in cases {
         let dir = tempfile::tempdir().unwrap();
@@ -817,25 +855,26 @@ fn silence_expires_data_passes_the_deadline_and_closes_the_market_from_advance_a
             update(NEXT, "paper-next", 3, "80", "25", Some(1), lease),
         );
         let book = driver.side_book(No, "25", 1, 40000, 10_000_000);
-        for at in [45000, 55000] {
+        // Advance-only inputs carry time into the purchase window; no book has been sent yet.
+        for at in [45000, 55000, 61000] {
             driver.input(at, Payload::Advance);
         }
-        driver.input(61000, Payload::Book(book));
+        let receipt = engine
+            .paper_history(Some(run), None)
+            .unwrap()
+            .markets
+            .remove(0);
+        let witness = receipt.primary_witness.unwrap();
+        assert_eq!(witness["evaluated_at_ms"], "61000");
+        assert_eq!(witness["observation_number"], "1");
+        // The accepted NO 25 expired under Advance alone (unavailable, not the older NO 70's false).
+        assert_eq!(
+            witness["status"],
+            if expected == 0 { "unavailable" } else { "true" }
+        );
+        assert!(attempts(&path).is_empty());
+        driver.input(61500, Payload::Book(book));
         assert_eq!(attempts(&path).len(), expected);
-        if expected == 0 {
-            // The accepted NO 25 expired under Advance: unavailable, not the older NO 70 (false).
-            let receipt = engine
-                .paper_history(Some(run), None)
-                .unwrap()
-                .markets
-                .remove(0);
-            let witness = receipt.primary_witness.unwrap();
-            assert_eq!(receipt.reason, "unavailable");
-            assert_eq!(
-                (&witness["observation_number"], &witness["status"]),
-                (&serde_json::json!("1"), &serde_json::json!("unavailable"))
-            );
-        }
         for at in [121000, 900999] {
             driver.input(at, Payload::Advance);
         }

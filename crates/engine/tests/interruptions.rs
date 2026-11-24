@@ -144,6 +144,13 @@ fn update(
         })
         .to_vec()
 }
+fn coverage(binding_id: u32) -> rules::CoverageFact {
+    rules::CoverageFact {
+        binding_id,
+        start_ms: 0,
+        end_ms: 61000,
+    }
+}
 fn send(driver: &mut Driver, at: u64, updates: Vec<src::BindingUpdate>) {
     driver.source(
         at,
@@ -152,22 +159,6 @@ fn send(driver: &mut Driver, at: u64, updates: Vec<src::BindingUpdate>) {
             token: driver.context.book_token,
             updates,
             coverage: vec![],
-        },
-    );
-}
-/// Learning scenario: connect, verify both markets, initialize NEXT at YES 35 / NO 70, then
-/// enter NEXT at its exact opening (1000), which latches the YES side.
-fn enter(driver: &mut Driver) {
-    kalshi(driver, 0, src::Connection::Open);
-    verify(driver, 0, CURRENT);
-    verify(driver, 0, NEXT);
-    let mut initial = update(CURRENT, "paper-current", 1, "35", "70", None, 1000000);
-    initial.extend(update(NEXT, "paper-next", 3, "35", "70", None, 1000000));
-    send(driver, 0, initial);
-    driver.source(
-        1000,
-        src::SourceEvent::Boundary {
-            market_id: NEXT.into(),
         },
     );
 }
@@ -301,6 +292,144 @@ fn revocation_rejected_before_it_is_applied_keeps_purchases_blocked_until_resume
 }
 
 #[test]
+fn applying_a_different_loss_never_clears_a_refused_disconnect() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paper.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    let mut driver = Driver::start(&engine);
+    driver.prepare();
+    // A disconnect is admitted, then refused before it reaches source state.
+    let mut refused = next(
+        &driver,
+        61000,
+        envelope(
+            61000,
+            frontier(&driver),
+            src::SourceEvent::Connection {
+                provider: src::Provider::Kalshi,
+                token: driver.context.book_token,
+                state: src::Connection::Disconnected,
+            },
+        ),
+    );
+    refused.ordinal = 1;
+    assert_eq!(engine.paper_input(refused).unwrap_err().code, "stale_input");
+    // A different loss is admitted and applied; only its own admission is removed.
+    driver.source(
+        61100,
+        src::SourceEvent::Metadata {
+            token: driver.context.metadata_token,
+            market_id: NEXT.into(),
+            verified: false,
+        },
+    );
+    assert!(engine.paper_effective().0);
+    // Reverified metadata and a qualifying fresh book still cannot buy.
+    verify(&mut driver, 61200, NEXT);
+    driver.reinitialize(61300, "80", "25");
+    driver.input(
+        61300,
+        Payload::Book(driver.side_book(No, "25", 1, 61300, 10_000_000)),
+    );
+    assert!(attempts(&path).is_empty());
+    assert_eq!(driver.summary.control_state, "paused");
+    engine
+        .paper_control(driver.context.run_id, Control::Resume)
+        .unwrap();
+    driver.observe(62000, 2, "80", "25");
+    driver.input(
+        62000,
+        Payload::Book(driver.side_book(No, "25", 2, 62000, 10_000_000)),
+    );
+    assert_eq!(attempts(&path), [("full".into(), "no".into(), 10, 10)]);
+}
+
+#[test]
+fn a_level_checkpoint_true_in_the_fresh_post_reconnect_snapshot_latches_at_snapshot_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+    let mut driver = Driver::start(&engine);
+    let run = driver.context.run_id;
+    kalshi(&mut driver, 0, src::Connection::Open);
+    verify(&mut driver, 0, CURRENT);
+    verify(&mut driver, 0, NEXT);
+    send(
+        &mut driver,
+        0,
+        update(NEXT, "paper-next", 3, "50", "70", None, 1000000),
+    );
+    driver.source(
+        1000,
+        src::SourceEvent::Boundary {
+            market_id: NEXT.into(),
+        },
+    );
+    // Unlatched when the feed drops; nothing is assumed for the gap.
+    kalshi(&mut driver, 20000, src::Connection::Disconnected);
+    kalshi(&mut driver, 30000, src::Connection::Open);
+    assert!(latches(&engine, run).is_empty());
+    // Known limit: YES 35 in the fresh snapshot is treated as observed now.
+    send(
+        &mut driver,
+        30000,
+        update(NEXT, "paper-next", 3, "35", "70", None, 1000000),
+    );
+    verify(&mut driver, 30000, NEXT);
+    assert_eq!(
+        latches(&engine, run),
+        [(NEXT.into(), "yes".into(), "30000".into())]
+    );
+}
+
+#[test]
+fn checkpoints_reset_when_the_next_market_is_entered_at_its_opening() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("paper.sqlite");
+    let engine = Engine::open(&path).unwrap();
+    let mut driver = driver_for(&engine, two_windows(&engine));
+    let run = driver.context.run_id;
+    // A latches YES at its opening; B is prepared with YES 50, which never qualifies.
+    enter_a(&mut driver);
+    driver.source(
+        901000,
+        src::SourceEvent::Boundary {
+            market_id: "KXBTC15M-PAPER-B".into(),
+        },
+    );
+    // In B's purchase window NO 25 would buy only if A's latch had carried over.
+    send(
+        &mut driver,
+        962000,
+        update(
+            "KXBTC15M-PAPER-B",
+            "paper-b",
+            3,
+            "80",
+            "25",
+            Some(1),
+            2000000,
+        ),
+    );
+    driver.input(
+        962000,
+        Payload::Book(Book {
+            source_market_id: "KXBTC15M-PAPER-B".into(),
+            source_contract_id: "paper-b".into(),
+            valid_until_ms: 2000000,
+            ..driver.side_book(No, "25", 1, 962000, 10_000_000)
+        }),
+    );
+    let mut entered = participated(&engine, run);
+    entered.sort();
+    assert_eq!(entered, ["KXBTC15M-PAPER-A", "KXBTC15M-PAPER-B"]);
+    assert_eq!(
+        latches(&engine, run),
+        [("KXBTC15M-PAPER-A".into(), "yes".into(), "1000".into())]
+    );
+    assert!(attempts(&path).is_empty());
+}
+
+#[test]
 fn mid_window_reconnect_keeps_the_latch_and_continues_only_on_fresh_qualifying_evidence() {
     for qualifies in [true, false] {
         let dir = tempfile::tempdir().unwrap();
@@ -308,7 +437,7 @@ fn mid_window_reconnect_keeps_the_latch_and_continues_only_on_fresh_qualifying_e
         let engine = Engine::open(&path).unwrap();
         let mut driver = Driver::start(&engine);
         let run = driver.context.run_id;
-        enter(&mut driver);
+        driver.enter();
         let before = latches(&engine, run);
         assert_eq!(before, [(NEXT.into(), "yes".into(), "1000".into())]);
         let old_generation = driver.context.generation;
@@ -418,7 +547,7 @@ fn user_pause_stop_and_quit_win_over_source_recovery() {
     let engine = Engine::open(&path).unwrap();
     let mut driver = Driver::start(&engine);
     let run = driver.context.run_id;
-    enter(&mut driver);
+    driver.enter();
     engine.paper_control(run, Control::Pause).unwrap();
     reconnect(&mut driver, 30000, 40000, NEXT, "paper-next", 3);
     driver.observe(61000, 1, "80", "25");
@@ -476,7 +605,7 @@ fn user_pause_stop_and_quit_win_over_source_recovery() {
     let path = dir.path().join("paper.sqlite");
     let engine = Engine::open(&path).unwrap();
     let mut driver = Driver::start(&engine);
-    enter(&mut driver);
+    driver.enter();
     kalshi(&mut driver, 30000, src::Connection::Disconnected);
     engine.fence_paper_quit();
     let back = next(
@@ -506,7 +635,6 @@ fn stale_results_are_refused_without_consuming_the_ordinal_and_unknown_or_mixed_
     let path = dir.path().join("paper.sqlite");
     let engine = Engine::open(&path).unwrap();
     let mut driver = Driver::start(&engine);
-    let run = driver.context.run_id;
     driver.prepare();
     // CURRENT closed at 1000 and was retired; NEXT is current.
     let retired_update = src::SourceEvent::Update {
@@ -520,7 +648,14 @@ fn stale_results_are_refused_without_consuming_the_ordinal_and_unknown_or_mixed_
         market_id: CURRENT.into(),
         verified: true,
     };
-    for event in [retired_update, retired_metadata] {
+    // Coverage alone for a retired binding is late too.
+    let retired_coverage = src::SourceEvent::Update {
+        stream: src::Stream::Book,
+        token: driver.context.book_token,
+        updates: vec![],
+        coverage: vec![coverage(1)],
+    };
+    for event in [retired_update, retired_metadata, retired_coverage] {
         let late = next(&driver, 61000, envelope(61000, 61000, event));
         let completed = driver.summary.completed_ordinal.clone();
         assert_eq!(engine.paper_input(late).unwrap_err().code, "stale_result");
@@ -547,25 +682,38 @@ fn stale_results_are_refused_without_consuming_the_ordinal_and_unknown_or_mixed_
     driver.input(61400, Payload::Advance);
     assert_eq!(driver.summary.control_state, "active");
     assert!(attempts(&path).is_empty());
-    // A late unverified result for the retired market is still an admitted loss: rejected as
-    // stale before it is applied, so its block stays until Resume.
-    let lost = src::SourceEvent::Metadata {
+    // A late unverified result for the retired market is stale, not a source loss.
+    let late = src::SourceEvent::Metadata {
         token: driver.context.metadata_token,
         market_id: CURRENT.into(),
         verified: false,
     };
-    let lost = next(&driver, 61500, envelope(61500, 61400, lost));
-    assert_eq!(engine.paper_input(lost).unwrap_err().code, "stale_result");
-    assert!(engine.paper_effective().0);
-    engine.paper_control(run, Control::Resume).unwrap();
+    let late = next(&driver, 61500, envelope(61500, 61400, late));
+    assert_eq!(engine.paper_input(late).unwrap_err().code, "stale_result");
     assert!(!engine.paper_effective().0);
+    driver.input(61500, Payload::Advance);
+    assert_eq!(driver.summary.control_state, "active");
 
-    // An unknown market, or a batch mixing a retired and a current market, still stops the run.
+    // An unknown market, or a batch mixing a retired and a current or unknown binding (in values
+    // or coverage), still stops the run.
     let unknown = |driver: &Driver| src::SourceEvent::Metadata {
         token: driver.context.metadata_token,
         market_id: "KXBTC15M-PAPER-UNKNOWN".into(),
         verified: true,
     };
+    let unknown_loss = |driver: &Driver| src::SourceEvent::Metadata {
+        token: driver.context.metadata_token,
+        market_id: "KXBTC15M-PAPER-UNKNOWN".into(),
+        verified: false,
+    };
+    let retired_values = |driver: &Driver, binding: u32| src::SourceEvent::Update {
+        stream: src::Stream::Book,
+        token: driver.context.book_token,
+        updates: update(CURRENT, "paper-current", 1, "35", "70", Some(1), 1000000),
+        coverage: vec![coverage(binding)],
+    };
+    let current_coverage = |driver: &Driver| retired_values(driver, 3);
+    let unknown_coverage = |driver: &Driver| retired_values(driver, 99);
     let unknown_update = |driver: &Driver| src::SourceEvent::Update {
         stream: src::Stream::Book,
         token: driver.context.book_token,
@@ -590,7 +738,14 @@ fn stale_results_are_refused_without_consuming_the_ordinal_and_unknown_or_mixed_
             coverage: vec![],
         }
     };
-    let cases: [&dyn Fn(&Driver) -> src::SourceEvent; 3] = [&unknown, &unknown_update, &mixed];
+    let cases: [&dyn Fn(&Driver) -> src::SourceEvent; 6] = [
+        &unknown,
+        &unknown_loss,
+        &unknown_update,
+        &mixed,
+        &current_coverage,
+        &unknown_coverage,
+    ];
     for event in cases {
         let dir = tempfile::tempdir().unwrap();
         let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
@@ -647,13 +802,14 @@ fn burst_in_one_millisecond_latches_a_transient_crossing_and_keeps_its_side() {
 
 #[test]
 fn silence_expires_data_passes_the_deadline_and_closes_the_market_from_advance_alone() {
-    for (lease, expected) in [(30000, 0), (1000000, 1)] {
+    // The quote is valid when accepted at 40000; the short lease ends at 50000, during silence.
+    for (lease, expected) in [(50000, 0), (1000000, 1)] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("paper.sqlite");
         let engine = Engine::open(&path).unwrap();
         let mut driver = Driver::start(&engine);
         let run = driver.context.run_id;
-        enter(&mut driver);
+        driver.enter();
         // The last quote: NO 25 would qualify for the opposite side once its window opens.
         send(
             &mut driver,
@@ -661,9 +817,25 @@ fn silence_expires_data_passes_the_deadline_and_closes_the_market_from_advance_a
             update(NEXT, "paper-next", 3, "80", "25", Some(1), lease),
         );
         let book = driver.side_book(No, "25", 1, 40000, 10_000_000);
-        driver.input(50000, Payload::Advance);
+        for at in [45000, 55000] {
+            driver.input(at, Payload::Advance);
+        }
         driver.input(61000, Payload::Book(book));
         assert_eq!(attempts(&path).len(), expected);
+        if expected == 0 {
+            // The accepted NO 25 expired under Advance: unavailable, not the older NO 70 (false).
+            let receipt = engine
+                .paper_history(Some(run), None)
+                .unwrap()
+                .markets
+                .remove(0);
+            let witness = receipt.primary_witness.unwrap();
+            assert_eq!(receipt.reason, "unavailable");
+            assert_eq!(
+                (&witness["observation_number"], &witness["status"]),
+                (&serde_json::json!("1"), &serde_json::json!("unavailable"))
+            );
+        }
         for at in [121000, 900999] {
             driver.input(at, Payload::Advance);
         }
@@ -689,7 +861,7 @@ fn clock_jumps_never_replay_missed_purchase_ticks_or_enter_late() {
         let path = dir.path().join("paper.sqlite");
         let engine = Engine::open(&path).unwrap();
         let mut driver = Driver::start(&engine);
-        enter(&mut driver);
+        driver.enter();
         driver.observe(30000, 1, "80", "25");
         driver.input(
             30000,

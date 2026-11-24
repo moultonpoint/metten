@@ -434,14 +434,17 @@ pub struct Reply {
     pub effective_generation: u64,
     pub completion_revision: Option<String>,
     pub bindings: Vec<strategy::BindingDescriptor>,
+    /// Scheduled markets the run's source state has retired, for classifying late results.
+    pub(crate) retired: Vec<String>,
 }
 
 #[derive(Default)]
 pub(crate) struct Fence {
     pub paused: bool,
-    /// Kalshi loss admitted but not yet applied to source state; cleared by applying it,
-    /// Resume or a new run context, never by recovery. A user Pause stays in `paused`.
-    pub source_lost: bool,
+    /// Kalshi losses admitted but not yet applied to source state. Each applied loss removes
+    /// only its own admission; Resume or a new run context resets it. A user Pause stays in
+    /// `paused`.
+    pub source_losses: u32,
     pub input_stopped: bool,
     pub quit: bool,
     pub stop_after_market: bool,
@@ -453,12 +456,13 @@ pub(crate) struct Fence {
 impl Fence {
     /// Every purchase gate and "paused" description reads both blocks.
     pub fn purchases_blocked(&self) -> bool {
-        self.paused || self.source_lost
+        self.paused || self.source_losses > 0
     }
 }
 pub(crate) enum Job {
     Start(Start),
-    Input(Box<Input>),
+    /// The flag records whether admission counted this input as a source loss.
+    Input(Box<Input>, bool),
     Control(i64, Control),
     Context(i64),
     CheckSettlement(i64),
@@ -503,7 +507,7 @@ impl Owner {
                 .as_ref()
                 .filter(|run| run.open && run.start.start_uuid == start.start_uuid)
                 .map(|run| run.id),
-            Job::Input(input) => Some(input.context.run_id),
+            Job::Input(input, _) => Some(input.context.run_id),
             Job::Control(id, _) | Job::Context(id) | Job::CheckSettlement(id) => Some(*id),
         };
         let result = (|| {
@@ -560,6 +564,7 @@ impl Owner {
                                 effective_generation: fence.lock().unwrap().generation,
                                 completion_revision: recorder.paper_completion_revision(id)?,
                                 bindings: Vec::new(),
+                                retired: Vec::new(),
                             });
                         }
                         let run = prepared.ok_or_else(|| Failure::new("stopped_context"))?;
@@ -577,13 +582,13 @@ impl Owner {
                         .ok_or_else(|| Failure::new("stopped_context"))?;
                     (lock(store)?.paper_summary(id)?, Some(run.context()))
                 }
-                Job::Input(input) => {
+                Job::Input(input, loss) => {
                     let run = self
                         .run
                         .as_mut()
                         .filter(|r| r.id == input.context.run_id && r.open)
                         .ok_or_else(|| Failure::new("stopped_context"))?;
-                    run.input(&input, store, venue, fence)?;
+                    run.input(&input, loss, store, venue, fence)?;
                     (lock(store)?.paper_summary(run.id)?, Some(run.context()))
                 }
                 Job::Control(id, control) => {
@@ -659,6 +664,7 @@ impl Owner {
                 effective_paused: f.purchases_blocked() || f.quit,
                 effective_generation: f.generation,
                 completion_revision,
+                retired: self.run.as_ref().map_or_else(Vec::new, Run::retired),
                 bindings: if include_bindings {
                     self.run
                         .as_ref()
@@ -822,9 +828,19 @@ impl Run {
             metadata_token: self.sources.token(sources::Stream::Metadata),
         }
     }
+    /// Scheduled markets no longer retained by source state (all are registered at start).
+    fn retired(&self) -> Vec<String> {
+        self.start
+            .markets
+            .iter()
+            .filter(|m| !self.sources.market_ids().any(|id| id == m.market_id))
+            .map(|m| m.market_id.clone())
+            .collect()
+    }
     fn input(
         &mut self,
         input: &Input,
+        loss: bool,
         store: &Mutex<Recorder>,
         venue: &mut dyn Venue,
         fence: &Arc<Mutex<Fence>>,
@@ -865,22 +881,33 @@ impl Run {
                 return Err(Failure::new("stopped_context"));
             }
             // A late result for a scheduled market already retired describes nothing current.
-            let retired = |id: &str| {
-                self.start.markets.iter().any(|m| m.market_id == id)
-                    && !self.sources.market_ids().any(|retained| retained == id)
+            let retired = self.retired();
+            let retired_scope = |scope: Option<&strategy::BindingScope>| match scope {
+                Some(
+                    strategy::BindingScope::Market { market_id }
+                    | strategy::BindingScope::Contract { market_id, .. },
+                ) => retired.contains(market_id),
+                _ => false,
             };
             let stale = match &envelope.event {
-                sources::SourceEvent::Update { updates, .. } => {
-                    !updates.is_empty()
-                        && updates.iter().all(|u| match &u.binding.scope {
-                            strategy::BindingScope::Underlying => false,
-                            strategy::BindingScope::Market { market_id }
-                            | strategy::BindingScope::Contract { market_id, .. } => {
-                                retired(market_id)
-                            }
+                // Every binding it names, in values and coverage, must belong to a retired market.
+                sources::SourceEvent::Update {
+                    updates, coverage, ..
+                } => {
+                    updates.len() + coverage.len() > 0
+                        && updates
+                            .iter()
+                            .all(|u| retired_scope(Some(&u.binding.scope)))
+                        && coverage.iter().all(|c| {
+                            retired_scope(
+                                self.bindings
+                                    .iter()
+                                    .find(|b| b.binding_id == c.binding_id)
+                                    .map(|b| &b.scope),
+                            )
                         })
                 }
-                sources::SourceEvent::Metadata { market_id, .. } => retired(market_id),
+                sources::SourceEvent::Metadata { market_id, .. } => retired.contains(market_id),
                 _ => false,
             };
             if stale {
@@ -889,13 +916,8 @@ impl Run {
         }
         let canonical = input.canonical()?;
         let at = i64::try_from(input.virtual_ms).map_err(|_| Failure::new("range"))?;
-        let revokes = input.revokes(&self.context());
         let replayed = lock(store)?.paper_begin_input(self.id, input.ordinal, &canonical, at)?;
         if replayed.is_some() {
-            if revokes {
-                // The latest completed input already applied this loss to source state.
-                fence.lock().unwrap().source_lost = false;
-            }
             return Ok(());
         }
         // Monitoring continues while a purchase is checked: consult the venue before deciding.
@@ -1186,9 +1208,10 @@ impl Run {
         {
             self.open = false;
         }
-        if revokes {
+        if loss {
             // Source state now blocks purchases itself until fresh verified evidence arrives.
-            fence.lock().unwrap().source_lost = false;
+            let mut f = fence.lock().unwrap();
+            f.source_losses = f.source_losses.saturating_sub(1);
         }
         if fence.lock().unwrap().input_stopped {
             self.open = false;
@@ -1218,7 +1241,9 @@ impl Run {
 }
 
 impl Input {
-    pub(crate) fn revokes(&self, current: &InputContext) -> bool {
+    /// Whether admission counts this input as a source loss. A late unverified result for a
+    /// retired scheduled market is stale, not a loss; an unknown market still counts.
+    pub(crate) fn revokes(&self, current: &InputContext, retired: &[String]) -> bool {
         if self.context.run_id != current.run_id
             || self.context.generation != current.generation
             || self.context.book_token != current.book_token
@@ -1240,11 +1265,11 @@ impl Input {
                 event:
                     sources::SourceEvent::Metadata {
                         token,
+                        market_id,
                         verified: false,
-                        ..
                     },
                 ..
-            }) => *token == current.metadata_token,
+            }) => *token == current.metadata_token && !retired.contains(market_id),
             _ => false,
         }
     }

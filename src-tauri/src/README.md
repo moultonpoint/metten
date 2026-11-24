@@ -157,11 +157,12 @@ prove an account tier or prevent external-consumer throttling. Reservations are 
 include failed transport attempts and retries, but never claim server receipt. HTTP, handshake and established-socket
 transient read/control-write failures use one persistent provider retry owner: 5-second exponential
 start, capped at 60 seconds with bounded positive jitter; five failed attempts
-enter a queryable slow-retry state with at most one attempt/minute. Thirty seconds
-of verified usable data is meant to reset it; a handshake never does. Current
-limitation: no production path calls that reset yet, so slow retry lasts until restart
-([#77](https://github.com/moultonpoint/metten/issues/77)). Socket loss resets
-the usable-data interval before later recovery. Intentional cancellation resets
+enter a queryable slow-retry state with at most one attempt/minute. Slow retry clears
+when the engine accepts a price value and accepts another at least 30 seconds later on
+the same connection, with no failure, close or drop between them. Heartbeats,
+acknowledgments, handshakes and absent or empty readings never count. This paces
+reconnects only: it grants no freshness and feeds no purchase decision. Socket loss resets
+that interval before later recovery. Intentional cancellation resets
 that interval without incrementing transient failures; malformed protocol remains
 terminal. Each failed socket operation is recorded once, then closed/revoked. Denial/protocol/capacity
 failures are terminal for that operation. Metadata and handshakes have a 10-second
@@ -271,8 +272,9 @@ actual control attempt, with both retained books required for replacement comple
 Matching real data can also prove channel presence. Index-list absence remains
 awaiting data, distinct from explicit transport access refusal. An established
 read I/O timeout records one transient retry; expiration while waiting only for a
-control permit does not. Unsupported freshness never resets slow retry merely
-because frames arrived. Explicit close and unpolled owned-service Drop reset the
+control permit does not. Frames reset slow retry only through the
+[step-3](#step-3-provider-foundation) accepted-price rule; arrival alone never does.
+Explicit close and unpolled owned-service Drop reset the
 usable interval without counting a transient failure. Ping wakeups coalesce while
 the library owns the pending automatic pong, independently of subscription permits.
 The keepalive counter counts explicit flush attempts, not every automatic wire pong.

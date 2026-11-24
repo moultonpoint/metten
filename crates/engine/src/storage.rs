@@ -1270,7 +1270,27 @@ impl Recorder {
         reason: &str,
         qualified: bool,
     ) -> Result<(), crate::paper::Failure> {
-        self.connection.execute("UPDATE paper_markets SET summary=CASE WHEN NOT ?4 THEN json_remove(summary,'$.current_risk_block') WHEN ?4 AND ?3 IN ('insufficient_funds','daily_budget','funds_unavailable','price','evidence_mismatch','objective_blocked','unavailable_evidence','purchases_paused') AND json_extract(summary,'$.first_block') IS NULL THEN json_set(summary,'$.first_block',json_object('reason',?3,'primary_witness',json_extract(summary,'$.primary_witness'),'purchase_check',json_extract(summary,'$.purchase_check'))) ELSE summary END,evidence_revision=evidence_revision+CASE WHEN participated=0 OR qualified<?4 THEN 1 ELSE 0 END,participated=1,qualified=max(qualified,?4),reason=CASE WHEN EXISTS(SELECT 1 FROM paper_attempts a WHERE a.paper_market_id=paper_markets.paper_market_id AND a.state IN ('full','partial','zero','dispatched','unknown')) THEN reason ELSE ?3 END WHERE run_id=?1 AND source_market_id=?2",params![run,source,reason,qualified]).map_err(paper_storage)?;
+        self.connection.execute(
+            "UPDATE paper_markets SET summary=CASE
+                 WHEN ?4 AND ?3 IN ('insufficient_funds','daily_budget','funds_unavailable','price',
+                                    'evidence_mismatch','objective_blocked','unavailable_evidence','purchases_paused')
+                      AND json_extract(prior.doc,'$.first_block') IS NULL
+                 THEN json_set(prior.doc,'$.first_block',json_object('reason',?3,
+                          'primary_witness',json_extract(prior.doc,'$.primary_witness'),
+                          'purchase_check',json_extract(prior.doc,'$.purchase_check')))
+                 ELSE prior.doc END,
+             evidence_revision=evidence_revision+CASE WHEN participated=0 OR qualified<?4 THEN 1 ELSE 0 END,
+             participated=1,qualified=max(qualified,?4),
+             reason=CASE WHEN EXISTS(SELECT 1 FROM paper_attempts a
+                       WHERE a.paper_market_id=paper_markets.paper_market_id
+                       AND a.state IN ('full','partial','zero','dispatched','unknown')) THEN reason ELSE ?3 END
+             FROM (SELECT CASE WHEN NOT ?4 OR ?3 IN ('price','evidence_mismatch','objective_blocked',
+                                                         'unavailable_evidence','purchases_paused')
+                               THEN json_remove(summary,'$.current_risk_block') ELSE summary END AS doc
+                   FROM paper_markets WHERE run_id=?1 AND source_market_id=?2) AS prior
+             WHERE run_id=?1 AND source_market_id=?2",
+            params![run,source,reason,qualified],
+        ).map_err(paper_storage)?;
         Ok(())
     }
 
@@ -1287,10 +1307,24 @@ impl Recorder {
         at: i64,
     ) -> Result<(), crate::paper::Failure> {
         use crate::paper::{Failure, payout};
-        if at < 0 || (at as u64) < entry.available_ms || entry.available_ms < entry.close_ms {
+        if at < 0 || entry.available_ms < entry.close_ms {
             return Err(Failure::new("range"));
         }
         let tx = self.connection.transaction().map_err(paper_storage)?;
+        let received: Option<i64> = tx
+            .query_row(
+                "SELECT json_extract(summary,'$.deferred_final_ms') FROM paper_markets
+             WHERE run_id=?1 AND source_market_id=?2",
+                params![run, entry.source_market_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(paper_storage)?
+            .flatten();
+        let at = at.max(received.unwrap_or(0));
+        if (at as u64) < entry.available_ms {
+            return Err(Failure::new("range"));
+        }
         let manifest: String = tx
             .query_row(
                 "SELECT settlement_manifest FROM paper_runs WHERE run_id=?1",
@@ -1367,8 +1401,7 @@ impl Recorder {
         use crate::paper::{Failure, SettlementManifestEntry};
         let entries = {
             let mut statement = self.connection.prepare(
-                "SELECT r.run_id,m.source_market_id,r.settlement_manifest,r.virtual_frontier_ms,
-                        json_extract(m.summary,'$.deferred_final_ms')
+                "SELECT r.run_id,m.source_market_id,r.settlement_manifest,r.virtual_frontier_ms
                  FROM paper_markets m JOIN paper_runs r USING(run_id)
                  WHERE (?1 IS NULL OR r.run_id=?1) AND json_extract(m.summary,'$.deferred_final_ms') IS NOT NULL
                  AND NOT EXISTS(SELECT 1 FROM paper_attempts a WHERE a.paper_market_id=m.paper_market_id
@@ -1381,21 +1414,20 @@ impl Recorder {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
-                        row.get::<_, i64>(4)?,
                     ))
                 })
                 .map_err(paper_storage)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(paper_storage)?
         };
-        for (run, market, manifest, frontier, received) in entries {
+        for (run, market, manifest, frontier) in entries {
             let manifest = serde_json::from_str::<Vec<SettlementManifestEntry>>(&manifest)
                 .map_err(|_| Failure::new("storage"))?;
             let entry = manifest
                 .iter()
                 .find(|entry| entry.source_market_id == market)
                 .ok_or_else(|| Failure::new("storage"))?;
-            self.paper_settle(run, entry, at.max(frontier).max(received))?;
+            self.paper_settle(run, entry, at.max(frontier))?;
         }
         Ok(())
     }

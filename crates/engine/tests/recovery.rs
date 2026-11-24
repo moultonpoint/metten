@@ -774,45 +774,48 @@ fn recovered_zero_fill_advances_its_receipt_revision() {
 }
 
 #[test]
-fn reopen_applies_a_final_result_deferred_while_a_purchase_was_unknown() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("paper.sqlite");
-    let probe = Probe::default();
-    let engine = probe.open(&path);
-    let mut driver = Driver::start(&engine);
-    let run = driver.context.run_id;
-    partial_then_uncertain_retry(&mut driver, &probe);
-    let db = Connection::open(&path).unwrap();
-    db.execute_batch(
-        "CREATE TRIGGER fail_completion BEFORE UPDATE OF completed_ordinal ON paper_runs
+fn explicit_check_and_reopen_preserve_a_deferred_final_result_receipt() {
+    for reopen in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("paper.sqlite");
+        let probe = Probe::default();
+        let engine = probe.open(&path);
+        let mut driver = Driver::start(&engine);
+        let run = driver.context.run_id;
+        partial_then_uncertain_retry(&mut driver, &probe);
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER fail_completion BEFORE UPDATE OF completed_ordinal ON paper_runs
         WHEN NEW.completed_ordinal > OLD.completed_ordinal AND NEW.completed_result='complete'
         BEGIN SELECT RAISE(ABORT,'controlled interruption after the settlement receipt'); END;",
-    )
-    .unwrap();
-    let received_at = 1_201_000;
-    let result = engine.paper_input(Input {
-        context: driver.context,
-        ordinal: driver.ordinal + 1,
-        virtual_ms: received_at,
-        payload: Payload::Settlement(scenario(1).settlement_manifest.remove(0)),
-    });
-    assert_eq!(result.unwrap_err().code, "storage");
-    db.execute_batch("DROP TRIGGER fail_completion").unwrap();
-    drop(db);
-    assert_eq!(count(&path, "SELECT count(*) FROM paper_settlements"), 0);
-    drop(engine);
-
-    probe.plan(|plan| plan.hide_records = false);
-    let reopened = probe.open(&path);
-    assert_eq!(reopened.paper_summary(run).unwrap().cash, "10515810000");
-    assert_eq!(count(&path, "SELECT count(*) FROM paper_settlements"), 1);
-    assert_eq!(
-        receipt(&reopened, run).settlement_virtual_ms.as_deref(),
-        Some("1201000")
-    );
-    assert_eq!(probe.sends(), 2);
-    assert_eq!(
-        reopened.paper_summary(run).unwrap().control_state,
-        "stopped"
-    );
+        )
+        .unwrap();
+        let received_at = 1_201_000;
+        let result = engine.paper_input(Input {
+            context: driver.context,
+            ordinal: driver.ordinal + 1,
+            virtual_ms: received_at,
+            payload: Payload::Settlement(scenario(1).settlement_manifest.remove(0)),
+        });
+        assert_eq!(result.unwrap_err().code, "storage");
+        db.execute_batch("DROP TRIGGER fail_completion").unwrap();
+        drop(db);
+        assert_eq!(count(&path, "SELECT count(*) FROM paper_settlements"), 0);
+        probe.plan(|plan| plan.hide_records = false);
+        let settled = if reopen {
+            drop(engine);
+            probe.open(&path)
+        } else {
+            engine.paper_check_settlement(run).unwrap();
+            engine
+        };
+        assert_eq!(settled.paper_summary(run).unwrap().cash, "10515810000");
+        assert_eq!(count(&path, "SELECT count(*) FROM paper_settlements"), 1);
+        assert_eq!(
+            receipt(&settled, run).settlement_virtual_ms.as_deref(),
+            Some("1201000")
+        );
+        assert_eq!(probe.sends(), 2);
+        assert_eq!(settled.paper_summary(run).unwrap().control_state, "stopped");
+    }
 }

@@ -1345,7 +1345,20 @@ fn daily_limit_refuses_the_whole_first_objective_at_the_configured_ceiling() {
         driver.summary.current_risk_block.as_deref(),
         Some("daily_budget")
     );
-    driver.observe(62000, 2, "80", "80");
+    driver.observe(62000, 2, "80", "25");
+    assert_eq!(driver.summary.current_risk_block, None);
+    let check = engine
+        .paper_history(Some(driver.context.run_id), None)
+        .unwrap();
+    assert_eq!(check.markets[0].reason, "evidence_mismatch");
+    assert_eq!(check.markets[0].risk_block.as_deref(), Some("daily_budget"));
+    let matching = driver.side_book(rules::Side::No, "25", 2, 62000, 3_000_000);
+    driver.input(62000, Payload::Book(matching));
+    assert_eq!(
+        driver.summary.current_risk_block.as_deref(),
+        Some("daily_budget")
+    );
+    driver.observe(63000, 3, "80", "80");
     assert_eq!(driver.summary.current_risk_block, None);
     let history = engine
         .paper_history(Some(driver.context.run_id), None)

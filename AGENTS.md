@@ -20,7 +20,7 @@ For features, bug fixes, refactors, tests, tooling and code reviews, follow [the
 
 For locating code or scoping a change, start with [the code map](docs/agents/code-map.md), then follow the relevant component contract and tests. Update the map when a change moves an entry point or adds a maintained boundary.
 
-For evidence navigation, bounded source reads, coordinated delegation and mixed-work checkpoint commits, follow `docs/agents/verification.md`.
+For evidence navigation, bounded source reads, coordinated delegation, session closeout and mixed-work checkpoint commits, follow [the verification guide](docs/agents/verification.md).
 
 ### Issue tracker
 

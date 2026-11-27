@@ -382,7 +382,16 @@ impl Engine {
                             .expect("recorder poisoned")
                             .paper_latest()
                             .ok()
-                            .flatten();
+                            .flatten()
+                            // An open-context reply already contains committed current-run state.
+                            // A historical reply cannot replace the current admission context.
+                            .or_else(|| {
+                                result
+                                    .as_ref()
+                                    .ok()
+                                    .filter(|reply| reply.context.is_some())
+                                    .map(|reply| reply.summary.clone())
+                            });
                         let mut revocation_recorded = false;
                         // Admission and idle publication share this lock so a Busy revocation cannot be missed.
                         loop {
@@ -917,6 +926,146 @@ mod tests {
     fn learning_paper_start(engine: &Engine) -> paper::Start {
         fixture::scenario(fixture::saved(engine))
     }
+    #[test]
+    fn refused_loss_after_start_summary_read_failure_blocks_until_resume_or_new_run() {
+        for new_run in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+            engine
+                .recorder
+                .lock()
+                .unwrap()
+                .fail_next_paper_latest
+                .set(true);
+            let mut driver = Driver::start(&engine);
+            assert!(!engine.recorder.lock().unwrap().fail_next_paper_latest.get());
+            // Refused before source apply, so only admission can remember the reported loss.
+            assert_eq!(
+                engine
+                    .paper_input(kalshi_loss(driver.context, 0, 0))
+                    .unwrap_err()
+                    .code,
+                "range"
+            );
+            assert!(engine.paper_effective().0);
+            driver.prepare();
+            driver.input(61000, Payload::Book(driver.book(100_000_000)));
+            let market = &engine
+                .paper_history(Some(driver.context.run_id), None)
+                .unwrap()
+                .markets[0];
+            assert_eq!(market.attempt_count, "0");
+            assert_eq!(driver.summary.cash, "10000000000");
+            assert!(engine.paper_effective().0);
+            if new_run {
+                engine
+                    .paper_control(driver.context.run_id, Control::StopAfterMarket)
+                    .unwrap();
+                driver.input(901000, Payload::Advance);
+                let mut start = fixture::scenario(fixture::saved(&engine));
+                start.start_uuid.replace_range(35.., "2");
+                let reply = engine.paper_start(start).unwrap();
+                assert_ne!(reply.context.unwrap().run_id, driver.context.run_id);
+                assert!(!reply.effective_paused);
+                driver = Driver {
+                    engine: &engine,
+                    context: reply.context.unwrap(),
+                    ordinal: 0,
+                    summary: reply.summary,
+                };
+                driver.prepare();
+                driver.input(61000, Payload::Book(driver.book(100_000_000)));
+            } else {
+                let reply = engine
+                    .paper_control(driver.context.run_id, Control::Resume)
+                    .unwrap();
+                assert!(!reply.effective_paused);
+                driver.context = reply.context.unwrap();
+                driver.observe(62000, 2, "80", "25");
+                driver.input(
+                    62000,
+                    Payload::Book(driver.side_book(rules::Side::No, "25", 2, 62000, 100_000_000)),
+                );
+            }
+            let history = engine
+                .paper_history(Some(driver.context.run_id), None)
+                .unwrap();
+            assert_eq!(history.markets[0].attempt_count, "1");
+            assert_eq!(history.markets[0].filled_quantity.as_deref(), Some("10"));
+        }
+    }
+
+    #[test]
+    fn valid_loss_after_start_summary_read_failure_is_applied_and_blocks_purchases() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+        engine
+            .recorder
+            .lock()
+            .unwrap()
+            .fail_next_paper_latest
+            .set(true);
+        let mut driver = Driver::start(&engine);
+        assert!(!engine.recorder.lock().unwrap().fail_next_paper_latest.get());
+        let before = driver.context;
+        let loss = kalshi_loss(before, 1, 0);
+        driver.input(0, loss.payload);
+        assert!(driver.context.generation > before.generation);
+        assert_ne!(driver.context.book_token, before.book_token);
+        // The applied loss leaves no admission block: source state now owns the interruption.
+        assert!(!engine.paper_effective().0);
+        // Reconnect, establish qualifying evidence, then verify another applied loss prevents a buy.
+        driver.prepare();
+        let loss = kalshi_loss(driver.context, driver.ordinal + 1, 61000);
+        driver.input(61000, loss.payload);
+        driver.input(61000, Payload::Book(driver.book(100_000_000)));
+        let history = engine
+            .paper_history(Some(driver.context.run_id), None)
+            .unwrap();
+        assert_eq!(history.markets[0].attempt_count, "0");
+        assert_eq!(driver.summary.cash, "10000000000");
+        assert!(!engine.paper_effective().0);
+    }
+
+    #[test]
+    fn historical_start_summary_read_failure_preserves_current_admission_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::open(dir.path().join("paper.sqlite")).unwrap();
+        let old = learning_paper_start(&engine);
+        let first = engine.paper_start(old.clone()).unwrap();
+        engine
+            .paper_control(first.context.unwrap().run_id, Control::StopAfterMarket)
+            .unwrap();
+        let mut fresh = old.clone();
+        fresh.start_uuid.replace_range(35.., "2");
+        let current = engine.paper_start(fresh).unwrap();
+        engine
+            .recorder
+            .lock()
+            .unwrap()
+            .fail_next_paper_latest
+            .set(true);
+        let replay = engine.paper_start(old).unwrap();
+        assert_eq!(replay.summary.run_id, first.summary.run_id);
+        assert!(replay.context.is_none());
+        assert_eq!(
+            engine.paper_latest().unwrap().unwrap().run_id,
+            current.summary.run_id
+        );
+        assert_eq!(
+            engine
+                .paper_input(kalshi_loss(current.context.unwrap(), 0, 0))
+                .unwrap_err()
+                .code,
+            "range"
+        );
+        assert!(engine.paper_effective().0);
+        let reply = engine
+            .paper_control(current.context.unwrap().run_id, Control::Resume)
+            .unwrap();
+        assert!(!reply.effective_paused);
+    }
+
     #[test]
     fn live_daily_limit_uses_workspace_results_and_sticky_rollover_permissions() {
         const MIDNIGHT: i64 = 20_779 * 86_400_000;

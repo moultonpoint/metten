@@ -7,6 +7,8 @@ use std::{fs::File, path::Path, time::Duration};
 pub(crate) struct Recorder {
     connection: Connection,
     _lock: WorkspaceLock,
+    #[cfg(test)]
+    pub(crate) fail_next_paper_latest: std::cell::Cell<bool>,
 }
 
 struct WorkspaceLock(File);
@@ -153,6 +155,8 @@ impl Recorder {
             Self {
                 connection,
                 _lock: lock,
+                #[cfg(test)]
+                fail_next_paper_latest: std::cell::Cell::new(false),
             },
             settings,
         ))
@@ -1553,6 +1557,10 @@ impl Recorder {
     pub(crate) fn paper_latest(
         &self,
     ) -> Result<Option<crate::paper::RunSummary>, crate::paper::Failure> {
+        #[cfg(test)]
+        if self.fail_next_paper_latest.replace(false) {
+            return Err(crate::paper::Failure::new("storage"));
+        }
         let id: Option<i64> = self
             .connection
             .query_row("SELECT max(run_id) FROM paper_runs", [], |r| r.get(0))

@@ -32,6 +32,14 @@ For large documents, locate headings with `rg -n '^#'` and read explicit line ra
 
 When delegation is requested or otherwise authorized, give each agent a bounded goal, owned functions/files, required source pointers, checks and stopping condition. Require implemented corrections and compact evidence. The lead integrates results and verifies the final source; agents coordinate shared-file edits before making them.
 
+## Session closeout
+
+Use one named implementation branch per PR. When a read-only review needs its own checkout, pin it to the reviewed commit and use a detached worktree if the host supports one.
+
+Before authorized cleanup, check both Git's worktree list and the owning session's branch and workspace bindings. T3 can retain a resume branch after a review completes and Git detaches its worktree. Keep the branch and workspace while a session still claims them or ownership is unclear.
+
+Recheck the exact tip against freshly resolved published `main` immediately before retiring a branch. A squash merge can preserve the final files while leaving the original commits reachable only through that branch. Keep unique history unless its disposal is authorized. Before removing a released worktree, also account for its HEAD, staged and unstaged changes, untracked files and any ignored files the owner needs. At handoff, identify anything retained and why.
+
 ## Verify a mixed-work checkpoint
 
 When a checkpoint combines inherited changes, untracked files or partial staging:

@@ -36,7 +36,7 @@ When delegation is requested or otherwise authorized, give each agent a bounded 
 
 Use one named implementation branch per PR. When a read-only review needs its own checkout, pin it to the reviewed commit and use a detached worktree if the host supports one.
 
-Before authorized cleanup, check both Git's worktree list and the owning session's branch and workspace bindings. T3 can retain a resume branch after a review completes and Git detaches its worktree. Keep the branch and workspace while a session still claims them or ownership is unclear.
+Before authorized cleanup, check Git's worktree list and the branch and workspace bindings of every session that could reference either candidate, including completed reviews. T3 can retain a resume branch after a review completes and Git detaches its worktree. Keep any branch or workspace that a session still claims or whose bindings you cannot fully verify.
 
 Recheck the exact tip against freshly resolved published `main` immediately before retiring a branch. A squash merge can preserve the final files while leaving the original commits reachable only through that branch. Keep unique history unless its disposal is authorized. Before removing a released worktree, also account for its HEAD, staged and unstaged changes, untracked files and any ignored files the owner needs. At handoff, identify anything retained and why.
 
